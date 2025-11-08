@@ -13,10 +13,15 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# --- 2. DATABASE CONNECTION (FIXED: เพิ่ม SSL) ---
+# --- 2. DATABASE CONNECTION (DEBUG VERSION) ---
 @st.cache_resource
 def init_connection():
-    """เชื่อมต่อฐานข้อมูล MySQL (ใช้ PyMySQL)"""
+    """
+    (DEBUG VERSION)
+    เชื่อมต่อฐานข้อมูล MySQL (ใช้ PyMySQL)
+    นี่คือเวอร์ชันที่จะ "โยน" (Raise) Error ออกมา
+    เพื่อให้ main() จับไปแสดงผลได้
+    """
     try:
         port_int = int(st.secrets["database"]["port"])
         
@@ -28,22 +33,14 @@ def init_connection():
             database=st.secrets["database"]["database"],
             cursorclass=DictCursor,
             connect_timeout=10,
-            ssl=True  # <--- ✅ นี่คือโค้ดที่ถูกต้องสำหรับ Aiven
+            ssl=True
         )
-    except pymysql.Error as e:
-        # Error นี้จะถูกจับโดย Splash Screen
-        print(f"Database connection failed: {e}")
-        return None
-    except ValueError:
-        print("Invalid Port number in Secrets.")
-        return None
     except Exception as e:
-        print(f"An unexpected error occurred in init_connection: {e}")
-        return None
+        # (FIX) โยน Error ออกไปเลย แทนที่จะ Return None
+        raise e
 
-# --- 3. RUN QUERY FUNCTION (ปรับปรุงสำหรับ PyMySQL) ---
+# --- 3. RUN QUERY FUNCTION ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
-    """ฟังก์ชันสำหรับรัน SQL Query (ใช้ PyMySQL)"""
     conn = init_connection()
     if conn:
         try:
@@ -58,7 +55,7 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                     return cursor.fetchall()
         except pymysql.Error as e:
             st.error(f"Query Error: {e}")
-            if e.args[0] in [2006, 2013]: # MySQL server has gone away or Connection lost
+            if e.args[0] in [2006, 2013]: 
                 st.cache_resource.clear() 
                 st.error("Database connection lost. Please refresh the page.")
     else:
@@ -154,7 +151,6 @@ def company_dashboard(user):
             j_close = st.date_input("วันปิดรับสมัคร", value=default_close)
             if st.form_submit_button("ยืนยันการลงประกาศ"):
                 if j_pos:
-                    # (FIX) ใช้ CURDATE() ซึ่ง PyMySQL/MySQL รู้จัก
                     sql = "INSERT INTO JobPost (j_company_id, j_position, j_description, j_requirements, j_post_date, j_closing_date) VALUES (%s, %s, %s, %s, CURDATE(), %s)"
                     if run_query(sql, (user['c_id'], j_pos, j_desc, j_req, j_close), commit=True):
                         st.success(f"ลงประกาศตำแหน่ง '{j_pos}' เรียบร้อยแล้ว!"); time.sleep(1.5); st.rerun()
@@ -231,11 +227,9 @@ def seeker_dashboard(user):
         with col1: search_query = st.text_input("ค้นหาจากชื่อตำแหน่ง หรือ ชื่อบริษัท", placeholder="พิมพ์คำค้นหา...")
         with col2: st.write(""); st.write(""); search_clicked = st.button("ค้นหา", use_container_width=True)
         
-        # (FIX) ใช้ CURDATE()
         sql = "SELECT JobPost.*, Company.c_name FROM JobPost JOIN Company ON JobPost.j_company_id = Company.c_id WHERE j_closing_date >= CURDATE()"
         params = []
         if search_query:
-            # (FIX) MySQL ใช้ LIKE (case-sensitive) หรือ LOWER()
             sql += " AND (LOWER(JobPost.j_position) LIKE LOWER(%s) OR LOWER(Company.c_name) LIKE LOWER(%s))"
             search_term = f"%{search_query}%"; params.extend([search_term, search_term])
         sql += " ORDER BY j_post_date DESC"
@@ -256,7 +250,6 @@ def seeker_dashboard(user):
                             st.info(f"สถานะ: {applied_jobs[job_id]}")
                         else:
                             if st.button("สมัครทันที", key=f"apply_{job_id}", use_container_width=True):
-                                # (FIX) ใช้ CURDATE()
                                 run_query("INSERT INTO Application (app_job_id, app_job_seeker_id, app_apply_date) VALUES (%s, %s, CURDATE())", (job_id, user['js_id']), commit=True)
                                 st.toast("ส่งใบสมัครสำเร็จ!"); time.sleep(1); st.rerun()
                     with st.expander("รายละเอียดงาน"):
@@ -296,10 +289,7 @@ def edit_profile_page(user, role):
             st.write("### ข้อมูลบริษัท")
             c_name = st.text_input("ชื่อบริษัท", value=user.get('c_name', ''))
             c_email = st.text_input("Email", value=user.get('c_email', ''))
-            
-            # (FIXED) แก้ไขบั๊กที่คุณเจอ
             c_address = st.text_area("ที่อยู่", value=user.get('c_address', '')) 
-            
             c_contact = st.text_input("ข้อมูลติดต่อ", value=user.get('c_contact_info', ''))
             if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
                 sql = "UPDATE Company SET c_name = %s, c_email = %s, c_address = %s, c_contact_info = %s WHERE c_id = %s"
@@ -332,7 +322,7 @@ def edit_profile_page(user, role):
                 else:
                     st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
 
-# --- 9. MAIN APP CONTROLLER (Splash Screen V3: Better Feedback) ---
+# --- 9. MAIN APP CONTROLLER (DEBUG VERSION) ---
 def main():
     if 'app_initialized' not in st.session_state:
         st.set_page_config(layout="centered", initial_sidebar_state="collapsed")
@@ -345,23 +335,34 @@ def main():
         
         progress_bar.progress(25, text="Connecting to database... (this may take a moment)")
         
-        conn_check = init_connection() # <-- นี่คือส่วนที่นาน
+        try:
+            # (FIX) เราจะเรียก init_connection() ใน try...except
+            # และ init_connection() ถูกแก้ให้ "โยน" Error ออกมาแล้ว
+            conn_check = init_connection() 
+            
+            if conn_check is None:
+                # กรณีนี้ไม่ควรเกิดขึ้นแล้ว แต่ดักไว้เผื่อ
+                st.error("Application failed: Connection returned None.")
+                progress_bar.empty()
+                return
+
+            # ถ้าเชื่อมต่อสำเร็จ ให้โหลดต่อ
+            progress_bar.progress(75, text="Loading interface...")
+            time.sleep(0.1)
+            progress_bar.progress(100, text="Ready!")
+            time.sleep(0.1)
+            progress_bar.empty()
+
+            st.session_state.app_initialized = True
+            st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
         
-        if conn_check is None:
-            # ถ้าเชื่อมต่อล้มเหลว ให้หยุดแอปและแสดง Error
-            st.error("Application failed to start: Could not connect to the database.")
-            st.error("Please check the 'Secrets' configuration in Streamlit settings.")
+        except Exception as e:
+            # (FIX) นี่คือจุดที่แอปจะจับ Error จริงๆ มาแสดง
+            st.error("Application failed to start. Here is the exact error:")
+            st.exception(e) # <-- นี่จะแสดง Error ที่แท้จริงบนหน้าจอสีชมพู
+            st.error("Please double-check your 'Secrets' (Password, Host, Port) and Aiven 'Firewall (Allowed IPs)'.")
             progress_bar.empty()
             return # หยุดการทำงานของแอป
-        
-        progress_bar.progress(75, text="Loading interface...")
-        time.sleep(0.1)
-        progress_bar.progress(100, text="Ready!")
-        time.sleep(0.1)
-        progress_bar.empty()
-
-        st.session_state.app_initialized = True
-        st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
     
     else:
         # --- Main App Logic (เหมือนเดิม) ---
