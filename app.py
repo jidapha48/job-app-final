@@ -13,14 +13,13 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# --- 2. DATABASE CONNECTION (DEBUG VERSION) ---
+# --- 2. DATABASE CONNECTION (FINAL VERSION) ---
 @st.cache_resource
 def init_connection():
     """
-    (DEBUG VERSION)
+    (FINAL VERSION)
     เชื่อมต่อฐานข้อมูล MySQL (ใช้ PyMySQL)
-    นี่คือเวอร์ชันที่จะ "โยน" (Raise) Error ออกมา
-    เพื่อให้ main() จับไปแสดงผลได้
+    แก้ไขโดยเปลี่ยน ssl=True เป็น ssl={}
     """
     try:
         port_int = int(st.secrets["database"]["port"])
@@ -33,7 +32,7 @@ def init_connection():
             database=st.secrets["database"]["database"],
             cursorclass=DictCursor,
             connect_timeout=10,
-            ssl=True
+            ssl={}  # <--- ✅✅✅ นี่คือการแก้ไขที่ถูกต้องครับ
         )
     except Exception as e:
         # (FIX) โยน Error ออกไปเลย แทนที่จะ Return None
