@@ -32,14 +32,15 @@ def init_connection():
             database=st.secrets["database"]["database"],
             cursorclass=DictCursor,
             connect_timeout=10,
-            ssl={}  # <--- ✅✅✅ นี่คือการแก้ไขที่ถูกต้องครับ
+            ssl={}  # <--- (FIX) ใช้ {} เพื่อเปิด SSL
         )
     except Exception as e:
-        # (FIX) โยน Error ออกไปเลย แทนที่จะ Return None
+        # โยน Error ออกไปให้ main() (Splash Screen) จัดการ
         raise e
 
-# --- 3. RUN QUERY FUNCTION ---
+# --- 3. RUN QUERY FUNCTION (FIXED) ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
+    """ฟังก์ชันสำหรับรัน SQL Query (ใช้ PyMySQL)"""
     conn = init_connection()
     if conn:
         try:
@@ -54,10 +55,15 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                     return cursor.fetchall()
         except pymysql.Error as e:
             st.error(f"Query Error: {e}")
-            if e.args[0] in [2006, 2013]: 
+            
+            # (FIX) เพิ่ม Error Code 2014 (Packet sequence number wrong)
+            # ถ้าเจอปัญหาการเชื่อมต่อ (Stale Connection) ให้ล้าง Cache
+            if e.args[0] in [2006, 2013, 2014]: 
                 st.cache_resource.clear() 
                 st.error("Database connection lost. Please refresh the page.")
     else:
+        # ถ้า conn เป็น None (เชื่อมต่อล้มเหลวตั้งแต่แรก)
+        # Error นี้จะถูกจัดการในหน้า Splash Screen แล้ว
         pass 
     return None
 
@@ -335,17 +341,13 @@ def main():
         progress_bar.progress(25, text="Connecting to database... (this may take a moment)")
         
         try:
-            # (FIX) เราจะเรียก init_connection() ใน try...except
-            # และ init_connection() ถูกแก้ให้ "โยน" Error ออกมาแล้ว
             conn_check = init_connection() 
             
             if conn_check is None:
-                # กรณีนี้ไม่ควรเกิดขึ้นแล้ว แต่ดักไว้เผื่อ
                 st.error("Application failed: Connection returned None.")
                 progress_bar.empty()
                 return
 
-            # ถ้าเชื่อมต่อสำเร็จ ให้โหลดต่อ
             progress_bar.progress(75, text="Loading interface...")
             time.sleep(0.1)
             progress_bar.progress(100, text="Ready!")
@@ -356,12 +358,11 @@ def main():
             st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
         
         except Exception as e:
-            # (FIX) นี่คือจุดที่แอปจะจับ Error จริงๆ มาแสดง
             st.error("Application failed to start. Here is the exact error:")
-            st.exception(e) # <-- นี่จะแสดง Error ที่แท้จริงบนหน้าจอสีชมพู
+            st.exception(e) 
             st.error("Please double-check your 'Secrets' (Password, Host, Port) and Aiven 'Firewall (Allowed IPs)'.")
             progress_bar.empty()
-            return # หยุดการทำงานของแอป
+            return 
     
     else:
         # --- Main App Logic (เหมือนเดิม) ---
