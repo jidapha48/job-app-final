@@ -38,7 +38,7 @@ def init_connection():
         # โยน Error ออกไปให้ main() (Splash Screen) จัดการ
         raise e
 
-# --- 3. RUN QUERY FUNCTION (FIXED) ---
+# --- 3. RUN QUERY FUNCTION ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
     """ฟังก์ชันสำหรับรัน SQL Query (ใช้ PyMySQL)"""
     conn = init_connection()
@@ -57,13 +57,10 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
             st.error(f"Query Error: {e}")
             
             # (FIX) เพิ่ม Error Code 2014 (Packet sequence number wrong)
-            # ถ้าเจอปัญหาการเชื่อมต่อ (Stale Connection) ให้ล้าง Cache
             if e.args[0] in [2006, 2013, 2014]: 
                 st.cache_resource.clear() 
                 st.error("Database connection lost. Please refresh the page.")
     else:
-        # ถ้า conn เป็น None (เชื่อมต่อล้มเหลวตั้งแต่แรก)
-        # Error นี้จะถูกจัดการในหน้า Splash Screen แล้ว
         pass 
     return None
 
@@ -81,24 +78,71 @@ def check_login(username, password):
     if seeker: return "JobSeeker", seeker
     return None, None
 
-# --- 5. AUTHENTICATION PAGES ---
+# (NEW) Callback function to change login view
+def set_login_view(view):
+    """Callback function to change the view in the login tab"""
+    st.session_state.login_view = view
+
+# --- 5. AUTHENTICATION PAGES (UPDATED with Forgot Username) ---
 def login_register_page():
+    """แสดงหน้า Login, Register, และ Forgot Username"""
     st.title("Job Application System")
+    
     tab1, tab2 = st.tabs(["เข้าสู่ระบบ (Login)", "ลงทะเบียน (Register)"])
+
     with tab1:
-        st.write("### ยินดีต้อนรับกลับมา!")
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        if st.button("เข้าสู่ระบบ", use_container_width=True):
-            role, user = check_login(username, password)
-            if user:
-                st.session_state['logged_in'] = True
-                st.session_state['user_role'] = role
-                st.session_state['user_info'] = user
-                st.toast(f"Login สำเร็จ! ยินดีต้อนรับ {username}")
-                time.sleep(1); st.rerun()
-            else:
-                st.error("Username หรือ Password ไม่ถูกต้อง")
+        # Check session state to show correct view
+        if st.session_state.login_view == 'login':
+            st.write("### ยินดีต้อนรับกลับมา!")
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            if st.button("เข้าสู่ระบบ", use_container_width=True):
+                role, user = check_login(username, password)
+                if user:
+                    st.session_state['logged_in'] = True
+                    st.session_state['user_role'] = role
+                    st.session_state['user_info'] = user
+                    st.toast(f"Login สำเร็จ! ยินดีต้อนรับ {username}")
+                    time.sleep(1); st.rerun()
+                else:
+                    st.error("Username หรือ Password ไม่ถูกต้อง")
+            
+            st.divider()
+            # (NEW) Button to switch to 'forgot_username' view
+            st.button("ลืม Username?", on_click=set_login_view, args=['forgot_username'], use_container_width=True, type="secondary")
+
+        elif st.session_state.login_view == 'forgot_username':
+            st.write("### ค้นหา Username")
+            st.caption("กรอกอีเมลของคุณเพื่อค้นหา Username ที่ผูกไว้")
+            
+            with st.form("forgot_username_form"):
+                email = st.text_input("Email ที่ลงทะเบียนไว้")
+                submitted = st.form_submit_button("ค้นหา")
+                
+                if submitted:
+                    if email:
+                        username_found = None
+                        # Query 1: Company
+                        user_comp = run_query("SELECT c_username FROM Company WHERE c_email = %s", (email,), fetch_one=True)
+                        if user_comp:
+                            username_found = user_comp['c_username']
+                        else:
+                            # Query 2: JobSeeker
+                            user_seeker = run_query("SELECT js_username FROM JobSeeker WHERE js_email = %s", (email,), fetch_one=True)
+                            if user_seeker:
+                                username_found = user_seeker['js_username']
+                        
+                        # Display result
+                        if username_found:
+                            st.success(f"พบ Username ของคุณ: **{username_found}**")
+                        else:
+                            st.error("ไม่พบ Username ที่ผูกกับอีเมลนี้")
+                    else:
+                        st.warning("กรุณากรอกอีเมล")
+            
+            # (NEW) Button to switch back to 'login' view
+            st.button("กลับไปหน้า Login", on_click=set_login_view, args=['login'], use_container_width=True, type="secondary")
+
     with tab2:
         st.write("### สร้างบัญชีใหม่")
         user_type = st.selectbox("คุณคือใคร?", ["ผู้หางาน (Job Seeker)", "บริษัท (Company)"])
@@ -365,12 +409,22 @@ def main():
             return 
     
     else:
-        # --- Main App Logic (เหมือนเดิม) ---
-        if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
-        if not st.session_state['logged_in']:
+        # --- Main App Logic (UPDATED) ---
+        
+        # (NEW) Initialize login view state
+        if 'login_view' not in st.session_state:
+            st.session_state.login_view = 'login'
+            
+        if 'logged_in' not in st.session_state: 
+            st.session_state.logged_in = False
+            
+        if not st.session_state.logged_in:
             login_register_page()
+            # (NEW) Reset view if login was successful
+            if st.session_state.logged_in: 
+                st.session_state.login_view = 'login'
         else:
-            user, role = st.session_state['user_info'], st.session_state['user_role']
+            user, role = st.session_state.user_info, st.session_state.user_role
             st.sidebar.header(f"บัญชีผู้ใช้: {role}")
             st.sidebar.write(f"สวัสดี, **{user.get('c_username') or user.get('js_username')}**")
             st.sidebar.divider()
@@ -378,10 +432,12 @@ def main():
             page = st.sidebar.radio("เมนูนำทาง", page_options)
             st.sidebar.divider()
             if st.sidebar.button("ออกจากระบบ"):
-                st.session_state['logged_in'] = False
-                st.session_state['user_role'] = None
-                st.session_state['user_info'] = None
+                st.session_state.logged_in = False
+                st.session_state.user_role = None
+                st.session_state.user_info = None
+                st.session_state.login_view = 'login' # (NEW) Reset view on logout
                 st.rerun()
+            
             if page == "Dashboard (หน้าหลัก)":
                 if role == "Company": company_dashboard(user)
                 elif role == "JobSeeker": seeker_dashboard(user)
