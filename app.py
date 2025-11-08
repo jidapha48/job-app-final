@@ -17,9 +17,9 @@ st.set_page_config(
 @st.cache_resource
 def init_connection():
     """
-    (FINAL VERSION)
+    (MASTER VERSION)
     เชื่อมต่อฐานข้อมูล MySQL (ใช้ PyMySQL)
-    แก้ไขโดยเปลี่ยน ssl=True เป็น ssl={}
+    ใช้ ssl={} และโยน Error ให้ main() จัดการ
     """
     try:
         port_int = int(st.secrets["database"]["port"])
@@ -40,7 +40,11 @@ def init_connection():
 
 # --- 3. RUN QUERY FUNCTION (FIXED) ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
-    """ฟังก์ชันสำหรับรัน SQL Query (ใช้ PyMySQL)"""
+    """
+    (MASTER VERSION)
+    ฟังก์ชันสำหรับรัน SQL Query
+    แก้ไขให้จับ Stale Connection Errors (0, 2006, 2013, 2014) และ IndexError
+    """
     conn = init_connection()
     if conn:
         try:
@@ -53,9 +57,16 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                     return cursor.fetchone()
                 elif fetch_all:
                     return cursor.fetchall()
-        except pymysql.Error as e:
-            # (FIX) เพิ่ม Error Code 0 (Connection Error)
-            if e.args[0] in [0, 2006, 2013, 2014]: 
+        
+        # (FIX) จับ Error การเชื่อมต่อที่ตายแล้ว (Stale Connection)
+        except (pymysql.Error, IndexError) as e:
+            error_code = 0 # Default
+            if isinstance(e, pymysql.Error):
+                error_code = e.args[0]
+            
+            # 0, 2006, 2013, 2014 คือ Stale connection errors
+            # IndexError คือ PyMySQL bug เมื่ออ่าน Stale connection
+            if error_code in [0, 2006, 2013, 2014] or isinstance(e, IndexError):
                 st.cache_resource.clear() 
                 st.error("การเชื่อมต่อฐานข้อมูลหมดอายุ กรุณากดปุ่ม 'เข้าสู่ระบบ' อีกครั้ง หรือ Refresh หน้า")
             else:
@@ -81,7 +92,7 @@ def check_login(username, password):
 def set_login_view(view):
     st.session_state.login_view = view
 
-# --- 5. AUTHENTICATION PAGES (UPDATED with Forgot Username) ---
+# --- 5. AUTHENTICATION PAGES (with Forgot Username) ---
 def login_register_page():
     st.title("Job Application System")
     
@@ -369,7 +380,7 @@ def edit_profile_page(user, role):
                 else:
                     st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
 
-# --- 9. MAIN APP CONTROLLER (DEBUG VERSION) ---
+# --- 9. MAIN APP CONTROLLER (FINAL DEBUG VERSION) ---
 def main():
     if 'app_initialized' not in st.session_state:
         st.set_page_config(layout="centered", initial_sidebar_state="collapsed")
@@ -400,6 +411,7 @@ def main():
             st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
         
         except Exception as e:
+            # (FIX) แสดง Error ที่แท้จริงบนหน้าจอ
             st.error("Application failed to start. Here is the exact error:")
             st.exception(e) 
             st.error("Please double-check your 'Secrets' (Password, Host, Port) and Aiven 'Firewall (Allowed IPs)'.")
