@@ -38,7 +38,7 @@ def init_connection():
         # โยน Error ออกไปให้ main() (Splash Screen) จัดการ
         raise e
 
-# --- 3. RUN QUERY FUNCTION ---
+# --- 3. RUN QUERY FUNCTION (FIXED) ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
     """ฟังก์ชันสำหรับรัน SQL Query (ใช้ PyMySQL)"""
     conn = init_connection()
@@ -54,12 +54,14 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                 elif fetch_all:
                     return cursor.fetchall()
         except pymysql.Error as e:
-            st.error(f"Query Error: {e}")
-            
-            # (FIX) เพิ่ม Error Code 2014 (Packet sequence number wrong)
-            if e.args[0] in [2006, 2013, 2014]: 
+            # (FIX) เพิ่ม Error Code 0 (Connection Error)
+            if e.args[0] in [0, 2006, 2013, 2014]: 
+                # ถ้าเจอปัญหาการเชื่อมต่อ (Stale Connection) ให้ล้าง Cache
                 st.cache_resource.clear() 
-                st.error("Database connection lost. Please refresh the page.")
+                st.error("การเชื่อมต่อฐานข้อมูลหมดอายุ กรุณากดปุ่ม 'เข้าสู่ระบบ' อีกครั้ง")
+            else:
+                # ถ้าเป็น Error อื่น (เช่น พิมพ์ SQL ผิด) ให้แสดงตามปกติ
+                st.error(f"Query Error: {e}")
     else:
         pass 
     return None
@@ -105,7 +107,10 @@ def login_register_page():
                     st.toast(f"Login สำเร็จ! ยินดีต้อนรับ {username}")
                     time.sleep(1); st.rerun()
                 else:
-                    st.error("Username หรือ Password ไม่ถูกต้อง")
+                    # Error (0, '') จะถูกจับใน run_query
+                    # ถ้า user เป็น None จริงๆ ถึงจะขึ้นว่าไม่ถูกต้อง
+                    if run_query("SELECT 1") is not None: # ตรวจสอบว่า DB เชื่อมต่อได้จริงๆ
+                        st.error("Username หรือ Password ไม่ถูกต้อง")
             
             st.divider()
             # (NEW) Button to switch to 'forgot_username' view
