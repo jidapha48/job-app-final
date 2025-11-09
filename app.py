@@ -42,9 +42,11 @@ def init_connection():
 # --- 3. RUN QUERY FUNCTION (FIXED) ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
     """
-    (MASTER VERSION v7)
+    (MASTER VERSION v8)
     ฟังก์ชันสำหรับรัน SQL Query
-    แก้ไขให้จับ Stale Connection Errors (0, 2006, 2013, 2014), IndexError, struct.error, และ AssertionError
+    แก้ไขให้จับ Stale Connection Errors (0, 2006, 2013, 2014), 
+    PyMySQL Bugs (IndexError, struct.error, AssertionError),
+    และ String Errors ('Packet sequence number wrong')
     """
     conn = init_connection()
     if conn:
@@ -61,20 +63,26 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
         
         # (FIX) จับ Error การเชื่อมต่อที่ตายแล้ว (Stale Connection) ทั้งหมด
         except (pymysql.Error, IndexError, struct.error, AssertionError) as e:
-            error_code = 0 # Default
-            if isinstance(e, pymysql.Error):
-                error_code = e.args[0]
             
-            # 0, 2006, 2013, 2014 คือ Stale connection errors
-            # IndexError, struct.error, AssertionError คือ Bug จาก PyMySQL เมื่ออ่าน Stale connection
-            if (error_code in [0, 2006, 2013, 2014] 
-                or isinstance(e, IndexError) 
-                or isinstance(e, struct.error)
-                or isinstance(e, AssertionError)): # <--- (FIX) เพิ่ม AssertionError
+            is_stale_connection_error = False
+            
+            # 1. Check for known PyMySQL bugs
+            if isinstance(e, (IndexError, struct.error, AssertionError)):
+                is_stale_connection_error = True
                 
+            # 2. Check for known pymysql.Error codes
+            elif isinstance(e, pymysql.Error):
+                if e.args and isinstance(e.args[0], int) and e.args[0] in [0, 2006, 2013, 2014]:
+                    is_stale_connection_error = True
+                # 3. (NEW) Check for the string error message!
+                elif "Packet sequence number wrong" in str(e):
+                    is_stale_connection_error = True
+            
+            if is_stale_connection_error:
                 st.cache_resource.clear() 
                 st.error("การเชื่อมต่อฐานข้อมูลหมดอายุ กรุณากดปุ่ม 'เข้าสู่ระบบ' อีกครั้ง หรือ Refresh หน้า")
             else:
+                # This is for *other* SQL errors (like "Table doesn't exist" or syntax errors)
                 st.error(f"Query Error: {e}")
     else:
         pass 
@@ -117,7 +125,12 @@ def login_register_page():
                     st.toast(f"Login สำเร็จ! ยินดีต้อนรับ {username}")
                     time.sleep(1); st.rerun()
                 else:
-                    if run_query("SELECT 1") is not None: 
+                    # (FIX) ถ้า run_query() คืนค่า None (เพราะ Stale Connection)
+                    # เราจะไม่แสดง "Username ไม่ถูกต้อง" แต่จะแสดง Error จาก run_query()
+                    # เราจะแสดง "Username ไม่ถูกต้อง" ต่อเมื่อ...
+                    # 1. การเชื่อมต่อ DB *สำเร็จ* (run_query != None)
+                    # 2. แต่ user *เป็น None* (หาไม่เจอ)
+                    if user is None and run_query("SELECT 1") is not None: 
                         st.error("Username หรือ Password ไม่ถูกต้อง")
             
             st.divider()
