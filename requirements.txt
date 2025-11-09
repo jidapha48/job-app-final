@@ -1,3 +1,4 @@
 streamlit
-mysql-connector-python
-pandas
+PyMySQL==1.1.0
+pycryptodome
+cryptography
