@@ -42,10 +42,8 @@ def init_connection():
 # --- 3. RUN QUERY FUNCTION (FIXED) ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
     """
-    (MASTER VERSION v9)
-    ฟังก์ชันสำหรับรัน SQL Query (Bulletproof Version)
-    แก้ไขให้จับ 'Exception' (Error ทั้งหมด)
-    จากนั้นค่อยเช็คว่าเป็น Stale Connection หรือไม่
+    (MASTER VERSION v10)
+    แก้ไข Bug: ให้ return True เมื่อ Query (เช่น 'SELECT 1') สำเร็จ
     """
     conn = init_connection()
     if conn:
@@ -56,36 +54,31 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                     conn.commit()
                     return True
                 elif fetch_one:
-                    return cursor.fetchone()
+                    return cursor.fetchone() # คืนค่า dict หรือ None (ถ้าไม่เจอ)
                 elif fetch_all:
-                    return cursor.fetchall()
+                    return cursor.fetchall() # คืนค่า list หรือ [] (ถ้าไม่เจอ)
+                
+                return True # (FIX) ถ้า Query สำเร็จ (เช่น 'SELECT 1') ให้ return True
         
-        # (FIX) จับ Error ทุกอย่างที่อาจเกิดขึ้น
-        except Exception as e:
+        except (pymysql.Error, IndexError, struct.error, AssertionError) as e:
             
-            is_stale_connection_error = True # (FIX) เหมาว่า "ใช่" ไว้ก่อน
+            is_stale_connection_error = True 
             
-            # (FIX) ตรวจสอบว่าใช่ "Error SQL ที่ผู้ใช้ทำผิด" หรือไม่
             if isinstance(e, pymysql.Error):
                 error_code = e.args[0] if e.args else -1
-                # 1146 = Table doesn't exist
-                # 1064 = SQL syntax error
-                # 1054 = Unknown column
-                # 1046 = No database selected
-                # 1045 = Access denied (Password ผิด)
                 if error_code in [1045, 1046, 1054, 1064, 1146]:
-                    is_stale_connection_error = False # ไม่ใช่ Stale Error
-                    st.error(f"Query Error (SQL): {e}") # แสดง Error SQL จริง
+                    is_stale_connection_error = False 
+                    st.error(f"Query Error (SQL): {e}") 
             
-            # (FIX) ถ้าไม่ใช่ Error SQL ที่เรารู้จัก...
-            # ให้เหมาว่ามันคือ Stale Connection Bug (IndexError, struct.error, AssertionError, OSError, Packet sequence... ฯลฯ)
             if is_stale_connection_error:
                 st.cache_resource.clear() 
                 st.error("การเชื่อมต่อฐานข้อมูลหมดอายุ กรุณากดปุ่ม 'เข้าสู่ระบบ' อีกครั้ง หรือ Refresh หน้า")
+            
+            return None # (FIX) คืนค่า None เมื่อเกิด Error เท่านั้น
 
     else:
         pass 
-    return None
+    return None # คืนค่า None ถ้า Connection ล้มเหลว
 
 # --- 4. UTILITIES ---
 def make_hash(password):
@@ -124,6 +117,8 @@ def login_register_page():
                     st.toast(f"Login สำเร็จ! ยินดีต้อนรับ {username}")
                     time.sleep(1); st.rerun()
                 else:
+                    # (FIX) ตอนนี้ run_query("SELECT 1") จะคืนค่า True (ถ้าสำเร็จ)
+                    # โลจิกนี้จึงทำงานถูกต้องแล้ว
                     if user is None and run_query("SELECT 1") is not None: 
                         st.error("Username หรือ Password ไม่ถูกต้อง")
             
@@ -421,7 +416,6 @@ def main():
             st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
         
         except Exception as e:
-            # (FIX) แสดง Error ที่แท้จริงบนหน้าจอ
             st.error("Application failed to start. Here is the exact error:")
             st.exception(e) 
             st.error("Please double-check your 'Secrets' (Password, Host, Port) and Aiven 'Firewall (Allowed IPs)'.")
