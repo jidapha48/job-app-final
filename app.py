@@ -42,9 +42,9 @@ def init_connection():
 # --- 3. RUN QUERY FUNCTION (FIXED) ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
     """
-    (MASTER VERSION v6)
+    (MASTER VERSION v7)
     ฟังก์ชันสำหรับรัน SQL Query
-    แก้ไขให้จับ Stale Connection Errors (0, 2006, 2013, 2014), IndexError, และ struct.error
+    แก้ไขให้จับ Stale Connection Errors (0, 2006, 2013, 2014), IndexError, struct.error, และ AssertionError
     """
     conn = init_connection()
     if conn:
@@ -60,16 +60,17 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                     return cursor.fetchall()
         
         # (FIX) จับ Error การเชื่อมต่อที่ตายแล้ว (Stale Connection) ทั้งหมด
-        except (pymysql.Error, IndexError, struct.error) as e:
+        except (pymysql.Error, IndexError, struct.error, AssertionError) as e:
             error_code = 0 # Default
             if isinstance(e, pymysql.Error):
                 error_code = e.args[0]
             
             # 0, 2006, 2013, 2014 คือ Stale connection errors
-            # IndexError และ struct.error คือ Bug จาก PyMySQL เมื่ออ่าน Stale connection
+            # IndexError, struct.error, AssertionError คือ Bug จาก PyMySQL เมื่ออ่าน Stale connection
             if (error_code in [0, 2006, 2013, 2014] 
                 or isinstance(e, IndexError) 
-                or isinstance(e, struct.error)):
+                or isinstance(e, struct.error)
+                or isinstance(e, AssertionError)): # <--- (FIX) เพิ่ม AssertionError
                 
                 st.cache_resource.clear() 
                 st.error("การเชื่อมต่อฐานข้อมูลหมดอายุ กรุณากดปุ่ม 'เข้าสู่ระบบ' อีกครั้ง หรือ Refresh หน้า")
