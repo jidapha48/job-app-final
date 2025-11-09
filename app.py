@@ -5,6 +5,7 @@ from pymysql.constants import CLIENT
 import hashlib
 import time
 import datetime
+import struct # (FIX) Import library ที่จำเป็น
 
 # --- 1. CONFIGURATION & SETUP ---
 st.set_page_config(
@@ -17,9 +18,9 @@ st.set_page_config(
 @st.cache_resource
 def init_connection():
     """
-    (FINAL VERSION)
+    (MASTER VERSION)
     เชื่อมต่อฐานข้อมูล MySQL (ใช้ PyMySQL)
-    แก้ไขโดยเปลี่ยน ssl=True เป็น ssl={}
+    ใช้ ssl={} และโยน Error ให้ main() จัดการ
     """
     try:
         port_int = int(st.secrets["database"]["port"])
@@ -40,7 +41,11 @@ def init_connection():
 
 # --- 3. RUN QUERY FUNCTION (FIXED) ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
-    """ฟังก์ชันสำหรับรัน SQL Query (ใช้ PyMySQL)"""
+    """
+    (MASTER VERSION v6)
+    ฟังก์ชันสำหรับรัน SQL Query
+    แก้ไขให้จับ Stale Connection Errors (0, 2006, 2013, 2014), IndexError, และ struct.error
+    """
     conn = init_connection()
     if conn:
         try:
@@ -53,14 +58,22 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                     return cursor.fetchone()
                 elif fetch_all:
                     return cursor.fetchall()
-        except pymysql.Error as e:
-            # (FIX) เพิ่ม Error Code 0 (Connection Error)
-            if e.args[0] in [0, 2006, 2013, 2014]: 
-                # ถ้าเจอปัญหาการเชื่อมต่อ (Stale Connection) ให้ล้าง Cache
+        
+        # (FIX) จับ Error การเชื่อมต่อที่ตายแล้ว (Stale Connection) ทั้งหมด
+        except (pymysql.Error, IndexError, struct.error) as e:
+            error_code = 0 # Default
+            if isinstance(e, pymysql.Error):
+                error_code = e.args[0]
+            
+            # 0, 2006, 2013, 2014 คือ Stale connection errors
+            # IndexError และ struct.error คือ Bug จาก PyMySQL เมื่ออ่าน Stale connection
+            if (error_code in [0, 2006, 2013, 2014] 
+                or isinstance(e, IndexError) 
+                or isinstance(e, struct.error)):
+                
                 st.cache_resource.clear() 
-                st.error("การเชื่อมต่อฐานข้อมูลหมดอายุ กรุณากดปุ่ม 'เข้าสู่ระบบ' อีกครั้ง")
+                st.error("การเชื่อมต่อฐานข้อมูลหมดอายุ กรุณากดปุ่ม 'เข้าสู่ระบบ' อีกครั้ง หรือ Refresh หน้า")
             else:
-                # ถ้าเป็น Error อื่น (เช่น พิมพ์ SQL ผิด) ให้แสดงตามปกติ
                 st.error(f"Query Error: {e}")
     else:
         pass 
@@ -80,20 +93,16 @@ def check_login(username, password):
     if seeker: return "JobSeeker", seeker
     return None, None
 
-# (NEW) Callback function to change login view
 def set_login_view(view):
-    """Callback function to change the view in the login tab"""
     st.session_state.login_view = view
 
-# --- 5. AUTHENTICATION PAGES (UPDATED with Forgot Username) ---
+# --- 5. AUTHENTICATION PAGES (with Forgot Username) ---
 def login_register_page():
-    """แสดงหน้า Login, Register, และ Forgot Username"""
     st.title("Job Application System")
     
     tab1, tab2 = st.tabs(["เข้าสู่ระบบ (Login)", "ลงทะเบียน (Register)"])
 
     with tab1:
-        # Check session state to show correct view
         if st.session_state.login_view == 'login':
             st.write("### ยินดีต้อนรับกลับมา!")
             username = st.text_input("Username")
@@ -107,13 +116,10 @@ def login_register_page():
                     st.toast(f"Login สำเร็จ! ยินดีต้อนรับ {username}")
                     time.sleep(1); st.rerun()
                 else:
-                    # Error (0, '') จะถูกจับใน run_query
-                    # ถ้า user เป็น None จริงๆ ถึงจะขึ้นว่าไม่ถูกต้อง
-                    if run_query("SELECT 1") is not None: # ตรวจสอบว่า DB เชื่อมต่อได้จริงๆ
+                    if run_query("SELECT 1") is not None: 
                         st.error("Username หรือ Password ไม่ถูกต้อง")
             
             st.divider()
-            # (NEW) Button to switch to 'forgot_username' view
             st.button("ลืม Username?", on_click=set_login_view, args=['forgot_username'], use_container_width=True, type="secondary")
 
         elif st.session_state.login_view == 'forgot_username':
@@ -127,17 +133,14 @@ def login_register_page():
                 if submitted:
                     if email:
                         username_found = None
-                        # Query 1: Company
                         user_comp = run_query("SELECT c_username FROM Company WHERE c_email = %s", (email,), fetch_one=True)
                         if user_comp:
                             username_found = user_comp['c_username']
                         else:
-                            # Query 2: JobSeeker
                             user_seeker = run_query("SELECT js_username FROM JobSeeker WHERE js_email = %s", (email,), fetch_one=True)
                             if user_seeker:
                                 username_found = user_seeker['js_username']
                         
-                        # Display result
                         if username_found:
                             st.success(f"พบ Username ของคุณ: **{username_found}**")
                         else:
@@ -145,7 +148,6 @@ def login_register_page():
                     else:
                         st.warning("กรุณากรอกอีเมล")
             
-            # (NEW) Button to switch back to 'login' view
             st.button("กลับไปหน้า Login", on_click=set_login_view, args=['login'], use_container_width=True, type="secondary")
 
     with tab2:
@@ -176,7 +178,7 @@ def login_register_page():
                      else:
                         st.warning("กรุณากรอกช่องที่มีเครื่องหมาย * ให้ครบ")
 
-# --- 6. COMPANY DASHBOARD (OPTIMIZED) ---
+# --- 6. COMPANY DASHBOARD (OPTIMIZED & UPDATED) ---
 def company_dashboard(user):
     st.subheader(f"Dashboard: {user['c_name']}")
     tab1, tab2, tab3 = st.tabs(["ประกาศงานของคุณ", "ลงประกาศงานใหม่", "จัดการใบสมัคร"])
@@ -186,12 +188,15 @@ def company_dashboard(user):
         jobs = run_query("SELECT * FROM JobPost WHERE j_company_id = %s ORDER BY j_post_date DESC", (user['c_id'],), fetch_all=True)
         if jobs:
             for job in jobs:
-                with st.expander(f"{job['j_position']} (ปิดรับ: {job['j_closing_date']})"):
-                    st.write(f"**รายละเอียด:** {job['j_description']}")
-                    st.write(f"**คุณสมบัติ:** {job['j_requirements']}")
-                    if st.button("ลบประกาศ", key=f"del_{job['j_id']}"):
-                        run_query("DELETE FROM JobPost WHERE j_id = %s", (job['j_id'],), commit=True)
-                        st.toast("ลบประกาศงานสำเร็จ!"); time.sleep(1); st.rerun()
+                with st.container(border=True):
+                    st.write(f"**{job['j_position']}**")
+                    st.caption(f"ลงประกาศเมื่อ: {job['j_post_date']} | ปิดรับ: {job['j_closing_date']}")
+                    with st.expander("ดูรายละเอียด"):
+                        st.write(f"**รายละเอียด:** {job['j_description']}")
+                        st.write(f"**คุณสมบัติ:** {job['j_requirements']}")
+                        if st.button("ลบประกาศ", key=f"del_{job['j_id']}"):
+                            run_query("DELETE FROM JobPost WHERE j_id = %s", (job['j_id'],), commit=True)
+                            st.toast("ลบประกาศงานสำเร็จ!"); time.sleep(1); st.rerun()
         else:
             st.info("บริษัทของคุณยังไม่มีประกาศงานที่เปิดรับในขณะนี้")
     
@@ -267,7 +272,7 @@ def company_dashboard(user):
         else:
             st.warning("กรุณาลงประกาศงานก่อน เพื่อให้มีผู้สมัคร")
 
-# --- 7. JOB SEEKER DASHBOARD (OPTIMIZED) ---
+# --- 7. JOB SEEKER DASHBOARD (OPTIMIZED & UPDATED) ---
 def seeker_dashboard(user):
     st.subheader(f"สวัสดีคุณ {user['js_full_name']}")
     tab1, tab2 = st.tabs(["ค้นหางาน", "สถานะการสมัคร"])
@@ -297,7 +302,8 @@ def seeker_dashboard(user):
                     c1, c2 = st.columns([3, 1])
                     with c1:
                         st.write(f"### {job['j_position']}")
-                        st.write(f"{job['c_name']} | ปิดรับ: {job['j_closing_date']}")
+                        st.write(f"{job['c_name']}")
+                        st.caption(f"ลงประกาศเมื่อ: {job['j_post_date']} | ปิดรับ: {job['j_closing_date']}")
                     with c2:
                         job_id = job['j_id']
                         if job_id in applied_jobs:
@@ -376,7 +382,7 @@ def edit_profile_page(user, role):
                 else:
                     st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
 
-# --- 9. MAIN APP CONTROLLER (DEBUG VERSION) ---
+# --- 9. MAIN APP CONTROLLER (FINAL DEBUG VERSION) ---
 def main():
     if 'app_initialized' not in st.session_state:
         st.set_page_config(layout="centered", initial_sidebar_state="collapsed")
@@ -407,6 +413,7 @@ def main():
             st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
         
         except Exception as e:
+            # (FIX) แสดง Error ที่แท้จริงบนหน้าจอ
             st.error("Application failed to start. Here is the exact error:")
             st.exception(e) 
             st.error("Please double-check your 'Secrets' (Password, Host, Port) and Aiven 'Firewall (Allowed IPs)'.")
@@ -416,7 +423,6 @@ def main():
     else:
         # --- Main App Logic (UPDATED) ---
         
-        # (NEW) Initialize login view state
         if 'login_view' not in st.session_state:
             st.session_state.login_view = 'login'
             
@@ -425,7 +431,6 @@ def main():
             
         if not st.session_state.logged_in:
             login_register_page()
-            # (NEW) Reset view if login was successful
             if st.session_state.logged_in: 
                 st.session_state.login_view = 'login'
         else:
@@ -440,7 +445,7 @@ def main():
                 st.session_state.logged_in = False
                 st.session_state.user_role = None
                 st.session_state.user_info = None
-                st.session_state.login_view = 'login' # (NEW) Reset view on logout
+                st.session_state.login_view = 'login' 
                 st.rerun()
             
             if page == "Dashboard (หน้าหลัก)":
