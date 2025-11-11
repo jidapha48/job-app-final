@@ -1,9 +1,11 @@
 import streamlit as st
 import pymysql
 from pymysql.cursors import DictCursor
+from pymysql.constants import CLIENT
 import hashlib
 import time
 import datetime
+import struct # Import library ที่จำเป็น
 
 # --- 1. CONFIGURATION & SETUP ---
 st.set_page_config(
@@ -12,11 +14,17 @@ st.set_page_config(
     initial_sidebar_state="auto"
 )
 
-# --- 2. DATABASE CONNECTION ---
+# --- 2. DATABASE CONNECTION (FINAL VERSION) ---
 @st.cache_resource
 def init_connection():
+    """
+    (MASTER VERSION)
+    เชื่อมต่อฐานข้อมูล MySQL (ใช้ PyMySQL)
+    ใช้ ssl={} และโยน Error ให้ main() จัดการ
+    """
     try:
         port_int = int(st.secrets["database"]["port"])
+        
         return pymysql.connect(
             host=st.secrets["database"]["host"],
             port=port_int,
@@ -25,13 +33,21 @@ def init_connection():
             database=st.secrets["database"]["database"],
             cursorclass=DictCursor,
             connect_timeout=10,
-            ssl={}
+            ssl={}  # <--- (FIX) ใช้ {} เพื่อเปิด SSL
         )
     except Exception as e:
+        # โยน Error ออกไปให้ main() (Splash Screen) จัดการ
         raise e
 
-# --- 3. RUN QUERY FUNCTION ---
+# --- 3. RUN QUERY FUNCTION (FIXED) ---
 def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
+    """
+    (MASTER VERSION v10)
+    แก้ไข Bug: ให้ return True เมื่อ Query (เช่น 'SELECT 1') สำเร็จ
+    แก้ไขให้จับ Stale Connection Errors (0, 2006, 2013, 2014), 
+    PyMySQL Bugs (IndexError, struct.error, AssertionError),
+    และ String Errors ('Packet sequence number wrong')
+    """
     conn = init_connection()
     if conn:
         try:
@@ -41,41 +57,75 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
                     conn.commit()
                     return True
                 elif fetch_one:
-                    return cursor.fetchone()
+                    return cursor.fetchone() # คืนค่า dict หรือ None (ถ้าไม่เจอ)
                 elif fetch_all:
-                    return cursor.fetchall()
-            return True
-        except pymysql.Error as e:
-            st.error(f"Database Error: {e}")
-            return None
-    return None
+                    return cursor.fetchall() # คืนค่า list หรือ [] (ถ้าไม่เจอ)
+                
+                return True # (FIX) ถ้า Query สำเร็จ (เช่น 'SELECT 1') ให้ return True
+        
+        # (FIX) จับ Error การเชื่อมต่อที่ตายแล้ว (Stale Connection) ทั้งหมด
+        except (pymysql.Error, IndexError, struct.error, AssertionError) as e:
+            
+            is_stale_connection_error = True # (FIX) เหมาว่า "ใช่" ไว้ก่อน
+            
+            # (FIX) ตรวจสอบว่าใช่ "Error SQL ที่ผู้ใช้ทำผิด" หรือไม่
+            if isinstance(e, pymysql.Error):
+                error_code = e.args[0] if e.args else -1
+                
+                # 1146 = Table doesn't exist
+                # 1064 = SQL syntax error
+                # 1054 = Unknown column
+                # 1046 = No database selected
+                # 1045 = Access denied (Password ผิด)
+                if error_code in [1045, 1046, 1054, 1064, 1146]:
+                    is_stale_connection_error = False # ไม่ใช่ Stale Error
+                    st.error(f"Query Error (SQL): {e}") # แสดง Error SQL จริง
+                
+                # 3. (NEW) Check for the string error message!
+                elif "Packet sequence number wrong" in str(e):
+                    is_stale_connection_error = True # นี่คือ Stale Error
+            
+            # (FIX) ถ้าไม่ใช่ Error SQL ที่เรารู้จัก...
+            # ให้เหมาว่ามันคือ Stale Connection Bug
+            if is_stale_connection_error:
+                st.cache_resource.clear() 
+                st.error("การเชื่อมต่อฐานข้อมูลหมดอายุ กรุณากดปุ่ม 'เข้าสู่ระบบ' อีกครั้ง หรือ Refresh หน้า")
+            
+            return None # (FIX) คืนค่า None เมื่อเกิด Error เท่านั้น
+
+    else:
+        pass 
+    return None # คืนค่า None ถ้า Connection ล้มเหลว
 
 # --- 4. UTILITIES ---
 def make_hash(password):
-    return hashlib.sha256(str(password).encode()).hexdigest()
+    return hashlib.sha256(str.encode(password)).hexdigest()
 
 def check_login(username, password):
     hashed_pw = make_hash(password)
-    comp = run_query("SELECT * FROM Company WHERE c_username=%s AND c_password_hash=%s", (username, hashed_pw), fetch_one=True)
+    comp = run_query("SELECT * FROM Company WHERE c_username = %s AND c_password_hash = %s",
+                     (username, hashed_pw), fetch_one=True)
     if comp: return "Company", comp
-    seeker = run_query("SELECT * FROM JobSeeker WHERE js_username=%s AND js_password_hash=%s", (username, hashed_pw), fetch_one=True)
+    seeker = run_query("SELECT * FROM JobSeeker WHERE js_username = %s AND js_password_hash = %s",
+                       (username, hashed_pw), fetch_one=True)
     if seeker: return "JobSeeker", seeker
     return None, None
 
 def set_login_view(view):
     st.session_state.login_view = view
 
-# --- 5. LOGIN & REGISTER PAGES ---
+# --- 5. AUTHENTICATION PAGES (with Forgot Username) ---
 def login_register_page():
     st.title("Job Application System")
+    
     tab1, tab2 = st.tabs(["เข้าสู่ระบบ (Login)", "ลงทะเบียน (Register)"])
 
-    # --- Login Tab ---
     with tab1:
         if st.session_state.login_view == 'login':
+            st.write("### ยินดีต้อนรับกลับมา!")
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
-            if st.button("เข้าสู่ระบบ"):
+            if st.button("เข้าสู่ระบบ", use_container_width=True):
                 role, user = check_login(username, password)
                 if user:
                     st.session_state['logged_in'] = True
@@ -84,98 +134,344 @@ def login_register_page():
                     st.toast(f"Login สำเร็จ! ยินดีต้อนรับ {username}")
                     time.sleep(1); st.rerun()
                 else:
-                    st.error("Username หรือ Password ไม่ถูกต้อง")
-            st.button("ลืม Username?", on_click=set_login_view, args=['forgot_username'])
+                    # (FIX) โลจิกนี้ทำงานถูกต้องแล้ว
+                    if user is None and run_query("SELECT 1") is not None: 
+                        st.error("Username หรือ Password ไม่ถูกต้อง")
+            
+            st.divider()
+            st.button("ลืม Username?", on_click=set_login_view, args=['forgot_username'], use_container_width=True, type="secondary")
 
         elif st.session_state.login_view == 'forgot_username':
-            email = st.text_input("กรอกอีเมลเพื่อค้นหา Username")
-            if st.button("ค้นหา"):
-                username_found = None
-                comp = run_query("SELECT c_username FROM Company WHERE c_email=%s", (email,), fetch_one=True)
-                if comp: username_found = comp['c_username']
-                else:
-                    seeker = run_query("SELECT js_username FROM JobSeeker WHERE js_email=%s", (email,), fetch_one=True)
-                    if seeker: username_found = seeker['js_username']
-                if username_found:
-                    st.success(f"Username ของคุณคือ: {username_found}")
-                else:
-                    st.error("ไม่พบ Username ที่ผูกกับอีเมลนี้")
-            st.button("กลับไปหน้า Login", on_click=set_login_view, args=['login'])
+            st.write("### ค้นหา Username")
+            st.caption("กรอกอีเมลของคุณเพื่อค้นหา Username ที่ผูกไว้")
+            
+            with st.form("forgot_username_form"):
+                email = st.text_input("Email ที่ลงทะเบียนไว้")
+                submitted = st.form_submit_button("ค้นหา")
+                
+                if submitted:
+                    if email:
+                        username_found = None
+                        user_comp = run_query("SELECT c_username FROM Company WHERE c_email = %s", (email,), fetch_one=True)
+                        if user_comp:
+                            username_found = user_comp['c_username']
+                        else:
+                            user_seeker = run_query("SELECT js_username FROM JobSeeker WHERE js_email = %s", (email,), fetch_one=True)
+                            if user_seeker:
+                                username_found = user_seeker['js_username']
+                        
+                        if username_found:
+                            st.success(f"พบ Username ของคุณ: **{username_found}**")
+                        else:
+                            st.error("ไม่พบ Username ที่ผูกกับอีเมลนี้")
+                    else:
+                        st.warning("กรุณากรอกอีเมล")
+            
+            st.button("กลับไปหน้า Login", on_click=set_login_view, args=['login'], use_container_width=True, type="secondary")
 
-    # --- Register Tab ---
     with tab2:
+        st.write("### สร้างบัญชีใหม่")
         user_type = st.selectbox("คุณคือใคร?", ["ผู้หางาน (Job Seeker)", "บริษัท (Company)"])
-        if user_type == "บริษัท (Company)":
+        if "Company" in user_type:
             with st.form("reg_company"):
-                c_user = st.text_input("Username *")
-                c_pass = st.text_input("Password *", type="password")
-                c_name = st.text_input("ชื่อบริษัท *")
-                c_email = st.text_input("Email *")
-                c_addr = st.text_area("ที่อยู่")
-                c_contact = st.text_input("เบอร์ติดต่อ")
+                c_user, c_pass = st.text_input("Username *"), st.text_input("Password *", type="password")
+                c_name, c_email = st.text_input("ชื่อบริษัท *"), st.text_input("Email *")
+                c_addr, c_contact = st.text_area("ที่อยู่"), st.text_input("เบอร์ติดต่อ")
                 if st.form_submit_button("ยืนยันการลงทะเบียน"):
                     if c_user and c_pass and c_name and c_email:
-                        existing = run_query("SELECT * FROM Company WHERE c_username=%s OR c_email=%s", (c_user, c_email), fetch_one=True)
-                        if existing:
-                            st.error("Username หรือ Email ถูกใช้งานแล้ว")
-                        else:
-                            sql = "INSERT INTO Company (c_username, c_password_hash, c_name, c_email, c_address, c_contact_info) VALUES (%s,%s,%s,%s,%s,%s)"
-                            if run_query(sql, (c_user, make_hash(c_pass), c_name, c_email, c_addr, c_contact), commit=True):
-                                st.success("ลงทะเบียนบริษัทสำเร็จ! กรุณาเข้าสู่ระบบ")
+                        sql = "INSERT INTO Company (c_username, c_password_hash, c_name, c_email, c_address, c_contact_info) VALUES (%s,%s,%s,%s,%s,%s)"
+                        if run_query(sql, (c_user, make_hash(c_pass), c_name, c_email, c_addr, c_contact), commit=True):
+                            st.success("ลงทะเบียนบริษัทสำเร็จ! กรุณาเข้าสู่ระบบ")
                     else:
                         st.warning("กรุณากรอกช่องที่มีเครื่องหมาย * ให้ครบ")
         else:
-            with st.form("reg_seeker"):
-                j_user = st.text_input("Username *")
-                j_pass = st.text_input("Password *", type="password")
-                j_name = st.text_input("ชื่อ-นามสกุล *")
-                j_email = st.text_input("Email *")
-                j_edu = st.text_input("ระดับการศึกษา")
-                j_skills = st.text_area("ทักษะ (Skills)")
-                j_exp = st.text_area("ประสบการณ์")
+             with st.form("reg_seeker"):
+                j_user, j_pass = st.text_input("Username *"), st.text_input("Password *", type="password")
+                j_name, j_email = st.text_input("ชื่อ-นามสกุล *"), st.text_input("Email *")
+                j_edu, j_skill, j_exp = st.text_input("ระดับการศึกษา"), st.text_area("ทักษะ (Skills)"), st.text_area("ประสบการณ์")
                 if st.form_submit_button("ยืนยันการลงทะเบียน"):
-                    if j_user and j_pass and j_name and j_email:
-                        existing = run_query("SELECT * FROM JobSeeker WHERE js_username=%s OR js_email=%s", (j_user, j_email), fetch_one=True)
-                        if existing:
-                            st.error("Username หรือ Email ถูกใช้งานแล้ว")
-                        else:
-                            sql = "INSERT INTO JobSeeker (js_username, js_password_hash, js_full_name, js_email, js_education, js_skills, js_experience) VALUES (%s,%s,%s,%s,%s,%s,%s)"
-                            if run_query(sql, (j_user, make_hash(j_pass), j_name, j_email, j_edu, j_skills, j_exp), commit=True):
-                                st.success("ลงทะเบียนผู้หางานสำเร็จ! กรุณาเข้าสู่ระบบ")
-                    else:
+                     if j_user and j_pass and j_name and j_email:
+                        sql = "INSERT INTO JobSeeker (js_username, js_password_hash, js_full_name, js_email, js_education, js_skills, js_experience) VALUES (%s,%s,%s,%s,%s,%s,%s)"
+                        if run_query(sql, (j_user, make_hash(j_pass), j_name, j_email, j_edu, j_skill, j_exp), commit=True):
+                            st.success("ลงทะเบียนผู้หางานสำเร็จ! กรุณาเข้าสู่ระบบ")
+                     else:
                         st.warning("กรุณากรอกช่องที่มีเครื่องหมาย * ให้ครบ")
 
-# --- MAIN APP ---
-def main():
-    if 'login_view' not in st.session_state:
-        st.session_state.login_view = 'login'
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-
-    if not st.session_state.logged_in:
-        login_register_page()
-    else:
-        user, role = st.session_state.user_info, st.session_state.user_role
-        st.sidebar.header(f"บัญชีผู้ใช้: {role}")
-        st.sidebar.write(f"สวัสดี, **{user.get('c_username') or user.get('js_username')}**")
-        st.sidebar.divider()
-        page_options = ["Dashboard", "แก้ไขข้อมูลส่วนตัว"]
-        page = st.sidebar.radio("เมนู", page_options)
-        st.sidebar.divider()
-        if st.sidebar.button("ออกจากระบบ"):
-            st.session_state.logged_in = False
-            st.session_state.user_role = None
-            st.session_state.user_info = None
-            st.session_state.login_view = 'login'
-            st.rerun()
-
-        if page == "Dashboard":
-            if role == "Company":
-                st.write("บริษัท Dashboard")  # ต่อเติม company_dashboard(user) ได้
-            else:
-                st.write("ผู้หางาน Dashboard")  # ต่อเติม seeker_dashboard(user) ได้
+# --- 6. COMPANY DASHBOARD (OPTIMIZED & UPDATED) ---
+def company_dashboard(user):
+    st.subheader(f"Dashboard: {user['c_name']}")
+    tab1, tab2, tab3 = st.tabs(["ประกาศงานของคุณ", "ลงประกาศงานใหม่", "จัดการใบสมัคร"])
+    
+    with tab1:
+        st.write("### งานที่คุณเปิดรับอยู่ในขณะนี้")
+        jobs = run_query("SELECT * FROM JobPost WHERE j_company_id = %s ORDER BY j_post_date DESC", (user['c_id'],), fetch_all=True)
+        if jobs:
+            for job in jobs:
+                with st.container(border=True):
+                    st.write(f"**{job['j_position']}**")
+                    st.caption(f"ลงประกาศเมื่อ: {job['j_post_date']} | ปิดรับ: {job['j_closing_date']}")
+                    with st.expander("ดูรายละเอียด"):
+                        st.write(f"**รายละเอียด:** {job['j_description']}")
+                        st.write(f"**คุณสมบัติ:** {job['j_requirements']}")
+                        if st.button("ลบประกาศ", key=f"del_{job['j_id']}"):
+                            run_query("DELETE FROM JobPost WHERE j_id = %s", (job['j_id'],), commit=True)
+                            st.toast("ลบประกาศงานสำเร็จ!"); time.sleep(1); st.rerun()
         else:
-            st.write("แก้ไขข้อมูลส่วนตัว")  # ต่อเติม edit_profile_page(user, role) ได้
+            st.info("บริษัทของคุณยังไม่มีประกาศงานที่เปิดรับในขณะนี้")
+    
+    with tab2:
+        st.write("### กรอกรายละเอียดตำแหน่งงาน")
+        with st.form("post_job_form"):
+            j_pos = st.text_input("ชื่อตำแหน่ง (Position) *", placeholder="เช่น Senior Marketing Officer")
+            j_desc = st.text_area("รายละเอียดงาน (Job Description)", height=150)
+            j_req = st.text_area("คุณสมบัติ (Requirements)", height=150, placeholder="เช่น วุฒิป.ตรี, ประสบการณ์ 2 ปี...")
+            default_close = datetime.date.today() + datetime.timedelta(days=30)
+            j_close = st.date_input("วันปิดรับสมัคร", value=default_close)
+            if st.form_submit_button("ยืนยันการลงประกาศ"):
+                if j_pos:
+                    sql = "INSERT INTO JobPost (j_company_id, j_position, j_description, j_requirements, j_post_date, j_closing_date) VALUES (%s, %s, %s, %s, CURDATE(), %s)"
+                    if run_query(sql, (user['c_id'], j_pos, j_desc, j_req, j_close), commit=True):
+                        st.success(f"ลงประกาศตำแหน่ง '{j_pos}' เรียบร้อยแล้ว!"); time.sleep(1.5); st.rerun()
+                else:
+                    st.error("กรุณาระบุชื่อตำแหน่งงาน")
+
+    with tab3:
+        st.write("### รายชื่อผู้สมัครแยกตามตำแหน่งงาน")
+        my_jobs = run_query("SELECT j_id, j_position FROM JobPost WHERE j_company_id = %s", (user['c_id'],), fetch_all=True)
+        
+        if my_jobs:
+            job_ids = [job['j_id'] for job in my_jobs]
+            
+            if job_ids: 
+                placeholders = ','.join(['%s'] * len(job_ids))
+                sql_all_apps = f"""
+                    SELECT Application.*, JobSeeker.js_full_name, JobSeeker.js_email, JobSeeker.js_skills, JobSeeker.js_experience
+                    FROM Application
+                    JOIN JobSeeker ON Application.app_job_seeker_id = JobSeeker.js_id
+                    WHERE app_job_id IN ({placeholders})
+                    ORDER BY app_apply_date DESC
+                """
+                all_applicants = run_query(sql_all_apps, tuple(job_ids), fetch_all=True)
+                
+                applicants_by_job = {}
+                if all_applicants:
+                    for app in all_applicants:
+                        job_id = app['app_job_id']
+                        if job_id not in applicants_by_job:
+                            applicants_by_job[job_id] = []
+                        applicants_by_job[job_id].append(app)
+            else:
+                applicants_by_job = {}
+
+            for job in my_jobs:
+                job_id = job['j_id']
+                applicants = applicants_by_job.get(job_id, [])
+                count = len(applicants)
+
+                with st.expander(f"ตำแหน่ง: {job['j_position']} ({count} คนสมัคร)"):
+                    if applicants:
+                        for app in applicants:
+                            with st.container(border=True):
+                                col1, col2 = st.columns([3, 2])
+                                with col1:
+                                    st.write(f"**{app['js_full_name']}**")
+                                    st.caption(f"Email: {app['js_email']} | สมัครเมื่อ: {app['app_apply_date']}")
+                                    st.write(f"**Skills:** {app['js_skills']}")
+                                    with st.expander("ดูประสบการณ์ทำงาน"): st.write(app['js_experience'])
+                                with col2:
+                                    st.write("#### อัปเดตสถานะ")
+                                    status_options = ['pending', 'reviewing', 'interview', 'rejected', 'offered']
+                                    current_index = status_options.index(app['app_status']) if app['app_status'] in status_options else 0
+                                    new_status = st.selectbox("เลือกสถานะ:", status_options, index=current_index, key=f"st_{app['app_id']}")
+                                    if st.button("บันทึก", key=f"save_{app['app_id']}"):
+                                        run_query("UPDATE Application SET app_status = %s WHERE app_id = %s", (new_status, app['app_id']), commit=True)
+                                        st.toast(f"อัปเดตสถานะของ {app['js_full_name']} แล้ว!"); time.sleep(1); st.rerun()
+                    else:
+                        st.info("ยังไม่มีผู้สมัครในตำแหน่งนี้")
+        else:
+            st.warning("กรุณาลงประกาศงานก่อน เพื่อให้มีผู้สมัคร")
+
+# --- 7. JOB SEEKER DASHBOARD (OPTIMIZED & UPDATED) ---
+def seeker_dashboard(user):
+    st.subheader(f"สวัสดีคุณ {user['js_full_name']}")
+    tab1, tab2 = st.tabs(["ค้นหางาน", "สถานะการสมัคร"])
+
+    my_apps_data = run_query("SELECT app_job_id, app_status FROM Application WHERE app_job_seeker_id=%s", (user['js_id'],), fetch_all=True)
+    applied_jobs = {app['app_job_id']: app['app_status'] for app in my_apps_data} if my_apps_data else {}
+
+    with tab1:
+        st.write("### ค้นหาตำแหน่งงานที่ใช่สำหรับคุณ")
+        col1, col2 = st.columns([3, 1])
+        with col1: search_query = st.text_input("ค้นหาจากชื่อตำแหน่ง หรือ ชื่อบริษัท", placeholder="พิมพ์คำค้นหา...")
+        with col2: st.write(""); st.write(""); search_clicked = st.button("ค้นหา", use_container_width=True)
+        
+        sql = "SELECT JobPost.*, Company.c_name FROM JobPost JOIN Company ON JobPost.j_company_id = Company.c_id WHERE j_closing_date >= CURDATE()"
+        params = []
+        if search_query:
+            sql += " AND (LOWER(JobPost.j_position) LIKE LOWER(%s) OR LOWER(Company.c_name) LIKE LOWER(%s))"
+            search_term = f"%{search_query}%"; params.extend([search_term, search_term])
+        sql += " ORDER BY j_post_date DESC"
+        
+        jobs = run_query(sql, tuple(params) if params else None, fetch_all=True)
+        
+        if jobs:
+            st.success(f"ค้นพบ {len(jobs)} ตำแหน่งงาน")
+            for job in jobs:
+                with st.container(border=True):
+                    c1, c2 = st.columns([3, 1])
+                    with c1:
+                        st.write(f"### {job['j_position']}")
+                        st.write(f"{job['c_name']}")
+                        st.caption(f"ลงประกาศเมื่อ: {job['j_post_date']} | ปิดรับ: {job['j_closing_date']}")
+                    with c2:
+                        job_id = job['j_id']
+                        if job_id in applied_jobs:
+                            st.info(f"สถานะ: {applied_jobs[job_id]}")
+                        else:
+                            if st.button("สมัครทันที", key=f"apply_{job_id}", use_container_width=True):
+                                run_query("INSERT INTO Application (app_job_id, app_job_seeker_id, app_apply_date) VALUES (%s, %s, CURDATE())", (job_id, user['js_id']), commit=True)
+                                st.toast("ส่งใบสมัครสำเร็จ!"); time.sleep(1); st.rerun()
+                    with st.expander("รายละเอียดงาน"):
+                        st.write(f"**Job Description:**\n{job['j_description']}")
+                        st.write(f"**Requirements:**\n{job['j_requirements']}")
+        else:
+            st.warning("ไม่พบตำแหน่งงานที่คุณค้นหา")
+            
+    with tab2:
+        st.write("### ประวัติการสมัครงานของคุณ")
+        my_apps_display = run_query("SELECT Application.*, JobPost.j_position, Company.c_name FROM Application JOIN JobPost ON Application.app_job_id = JobPost.j_id JOIN Company ON JobPost.j_company_id = Company.c_id WHERE app_job_seeker_id = %s ORDER BY app_apply_date DESC", (user['js_id'],), fetch_all=True)
+        if my_apps_display:
+            for app in my_apps_display:
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([2, 1, 1])
+                    c1.write(f"**{app['j_position']}**"); c1.caption(app['c_name'])
+                    status = app['app_status']
+                    if status == 'pending': c2.warning("รอพิจารณา")
+                    elif status == 'reviewing': c2.info("กำลังรีวิว")
+                    elif status == 'interview': c2.success("เรียกสัมภาษณ์")
+                    elif status == 'rejected': c2.error("ไม่ผ่าน")
+                    else: c2.write(f"สถานะ: {status}")
+                    if status in ['pending', 'reviewing']:
+                        if c3.button("ยกเลิกสมัคร", key=f"cancel_{app['app_id']}", use_container_width=True):
+                            run_query("DELETE FROM Application WHERE app_id = %s", (app['app_id'],), commit=True)
+                            st.toast("ยกเลิกการสมัครเรียบร้อยแล้ว"); time.sleep(1); st.rerun()
+                    else:
+                        c3.write("")
+        else:
+            st.info("คุณยังไม่ได้สมัครงาน")
+
+# --- 8. EDIT PROFILE PAGE (FIXED) ---
+def edit_profile_page(user, role):
+    st.subheader("แก้ไขข้อมูลส่วนตัว")
+    if role == "Company":
+        with st.form("edit_company_profile"):
+            st.write("### ข้อมูลบริษัท")
+            c_name = st.text_input("ชื่อบริษัท", value=user.get('c_name', ''))
+            c_email = st.text_input("Email", value=user.get('c_email', ''))
+            c_address = st.text_area("ที่อยู่", value=user.get('c_address', '')) 
+            c_contact = st.text_input("ข้อมูลติดต่อ", value=user.get('c_contact_info', ''))
+            if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
+                sql = "UPDATE Company SET c_name = %s, c_email = %s, c_address = %s, c_contact_info = %s WHERE c_id = %s"
+                if run_query(sql, (c_name, c_email, c_address, c_contact, user['c_id']), commit=True):
+                    st.session_state['user_info']['c_name'] = c_name
+                    st.session_state['user_info']['c_email'] = c_email
+                    st.session_state['user_info']['c_address'] = c_address
+                    st.session_state['user_info']['c_contact_info'] = c_contact
+                    st.success("บันทึกข้อมูลบริษัทเรียบร้อยแล้ว"); time.sleep(1); st.rerun()
+                else:
+                    st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+    elif role == "JobSeeker":
+        with st.form("edit_seeker_profile"):
+            st.write("### ข้อมูลผู้หางาน")
+            js_name = st.text_input("ชื่อ-นามสกุล", value=user.get('js_full_name', ''))
+            js_email = st.text_input("Email", value=user.get('js_email', ''))
+            js_edu = st.text_input("ระดับการศึกษา", value=user.get('js_education', ''))
+            js_skills = st.text_area("ทักษะ (Skills)", value=user.get('js_skills', ''))
+            js_exp = st.text_area("ประสบการณ์", value=user.get('js_experience', ''))
+            if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
+                sql = "UPDATE JobSeeker SET js_full_name = %s, js_email = %s, js_education = %s, js_skills = %s, js_experience = %s WHERE js_id = %s"
+                params = (js_name, js_email, js_edu, js_skills, js_exp, user['js_id'])
+                if run_query(sql, params, commit=True):
+                    st.session_state['user_info']['js_full_name'] = js_name
+                    st.session_state['user_info']['js_email'] = js_email
+                    st.session_state['user_info']['js_education'] = js_edu
+                    st.session_state['user_info']['js_skills'] = js_skills
+                    st.session_state['user_info']['js_experience'] = js_exp
+                    st.success("บันทึกข้อมูลส่วนตัวเรียบร้อยแล้ว"); time.sleep(1); st.rerun()
+                else:
+                    st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+
+# --- 9. MAIN APP CONTROLLER (FINAL DEBUG VERSION) ---
+def main():
+    if 'app_initialized' not in st.session_state:
+        st.set_page_config(layout="centered", initial_sidebar_state="collapsed")
+        
+        st.title("Job Application System")
+        st.write("Connecting talent with opportunity...")
+        
+        progress_bar = st.progress(0, text="Initializing...")
+        time.sleep(0.1) 
+        
+        progress_bar.progress(25, text="Connecting to database... (this may take a moment)")
+        
+        try:
+            conn_check = init_connection() 
+            
+            if conn_check is None:
+                st.error("Application failed: Connection returned None.")
+                progress_bar.empty()
+                return
+
+            progress_bar.progress(75, text="Loading interface...")
+            time.sleep(0.1)
+            progress_bar.progress(100, text="Ready!")
+            time.sleep(0.1)
+            progress_bar.empty()
+
+            st.session_state.app_initialized = True
+            st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
+        
+        except Exception as e:
+            # (FIX) แสดง Error ที่แท้จริงบนหน้าจอ
+            st.error("Application failed to start. Here is the exact error:")
+            st.exception(e) 
+            st.error("Please double-check your 'Secrets' (Password, Host, Port) and Aiven 'Firewall (Allowed IPs)'.")
+            progress_bar.empty()
+            return 
+    
+    else:
+        # --- Main App Logic (UPDATED) ---
+        
+        if 'login_view' not in st.session_state:
+            st.session_state.login_view = 'login'
+            
+        if 'logged_in' not in st.session_state: 
+            st.session_state.logged_in = False
+            
+        if not st.session_state.logged_in:
+            login_register_page()
+            if st.session_state.logged_in: 
+                st.session_state.login_view = 'login'
+        else:
+            user, role = st.session_state.user_info, st.session_state.user_role
+            st.sidebar.header(f"บัญชีผู้ใช้: {role}")
+            st.sidebar.write(f"สวัสดี, **{user.get('c_username') or user.get('js_username')}**")
+            st.sidebar.divider()
+            page_options = ["Dashboard (หน้าหลัก)", "แก้ไขข้อมูลส่วนตัว"]
+            page = st.sidebar.radio("เมนูนำทาง", page_options)
+            st.sidebar.divider()
+            if st.sidebar.button("ออกจากระบบ"):
+                st.session_state.logged_in = False
+                st.session_state.user_role = None
+                st.session_state.user_info = None
+                st.session_state.login_view = 'login' 
+                st.rerun()
+            
+            if page == "Dashboard (หน้าหลัก)":
+                if role == "Company": company_dashboard(user)
+                elif role == "JobSeeker": seeker_dashboard(user)
+            elif page == "แก้ไขข้อมูลส่วนตัว":
+                edit_profile_page(user, role)
 
 if __name__ == '__main__':
     main()
