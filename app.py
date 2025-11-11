@@ -48,8 +48,6 @@ def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False
         except pymysql.Error as e:
             st.error(f"Database Error: {e}")
             return None
-        finally:
-            conn.close()
     return None
 
 # --- 4. UTILITIES ---
