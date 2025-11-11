@@ -1,670 +1,477 @@
-<!DOCTYPE html>
-<html lang="th">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ระบบวิเคราะห์การสมัครงาน</title>
-    <!-- Chosen Palette: Calm Neutral (BG: gray-50/white, Primary: blue-600, Text: slate-800) -->
-    <!-- Application Structure Plan: ออกแบบเป็น Dashboard SPA 4 แท็บ (ภาพรวม, บริษัท, ผู้หางาน, ประกาศงาน) แทนการเลียนแบบโครงสร้างสไลด์ วัตถุประสงค์คือให้ผู้ใช้ (เช่น HR Manager หรือ Admin) สามารถสำรวจข้อมูลเชิงสัมพันธ์ได้ทันที เช่น คลิกบริษัทเพื่อดูงานที่โพสต์ หรือคลิกผู้หางานเพื่อดูประวัติการสมัคร โครงสร้างนี้เน้นการใช้งานและการสำรวจข้อมูล (Data Exploration) ที่ง่ายและตรงไปตรงมาที่สุด -->
-    <!-- Visualization & Content Choices: [ภาพรวม: 4 KPIs (HTML Card) / การสมัครงานตามเวลา (Line Chart - Chart.js) / สถานะการสมัคร (Donut Chart - Chart.js)] [บริษัท/ผู้หางาน/ประกาศงาน: ใช้โครงสร้าง 3 แท็บแยกกัน แต่ละแท็บมี List + Detail View (HTML/JS) และช่องค้นหา (JS Filter)] [การเชื่อมโยงข้อมูล (ERD): แสดงผลผ่านการคลิก (Click Interaction) เช่น คลิกบริษัท -> แสดงงานของบริษัท (JS Logic) ซึ่งเป็นการนำเสนอความสัมพันธ์แบบ 1-to-Many โดยไม่ใช้ไดอะแกรม] [ยืนยัน: ไม่ใช้ SVG/Mermaid ใช้ Canvas สำหรับชาร์ต และ HTML/Tailwind สำหรับโครงสร้างทั้งหมด] -->
-    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
-    
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet">
-    
-    <style>
-        body {
-            font-family: 'Sarabun', 'Inter', sans-serif;
-            background-color: #f8fafc; /* bg-gray-50 */
-        }
-        
-        /* สไตล์สำหรับ Chart Container ตามข้อกำหนด */
-        .chart-container {
-            position: relative;
-            width: 100%;
-            max-width: 48rem; /* max-w-2xl */
-            margin-left: auto;
-            margin-right: auto;
-            height: 24rem; /* h-96 */
-            max-height: 24rem; /* max-h-96 */
-        }
+import streamlit as st
+import pymysql
+from pymysql.cursors import DictCursor
+from pymysql.constants import CLIENT
+import hashlib
+import time
+import datetime
+import struct # Import library ที่จำเป็น
 
-        /* สไตล์สำหรับ Mobile Chart */
-        @media (max-width: 768px) {
-            .chart-container {
-                height: 20rem; /* h-80 */
-                max-height: 20rem; /* max-h-80 */
-            }
-        }
-        
-        /* สไตล์สำหรับ Active Tab */
-        .tab-btn.active {
-            border-color: #2563eb; /* border-blue-600 */
-            background-color: #dbeafe; /* bg-blue-100 */
-            color: #1e3a8a; /* text-blue-800 */
-            font-weight: 600;
-        }
-        
-        /* ซ่อน/แสดง Tab Content */
-        .tab-content {
-            display: none;
-        }
-        .tab-content.active {
-            display: block;
-        }
-        
-        /* สไตล์สำหรับ Scrollable List */
-        .data-list {
-            max-height: 70vh;
-            overflow-y: auto;
-        }
-    </style>
-</head>
-<body class="text-slate-800">
+# --- 1. CONFIGURATION & SETUP ---
+st.set_page_config(
+    page_title="Job Application System",
+    layout="centered",
+    initial_sidebar_state="auto"
+)
 
-    <div class="max-w-7xl mx-auto p-4 md:p-8">
+# --- 2. DATABASE CONNECTION (FINAL VERSION) ---
+@st.cache_resource
+def init_connection():
+    """
+    (MASTER VERSION)
+    เชื่อมต่อฐานข้อมูล MySQL (ใช้ PyMySQL)
+    ใช้ ssl={} และโยน Error ให้ main() จัดการ
+    """
+    try:
+        port_int = int(st.secrets["database"]["port"])
         
-        <header class="mb-6">
-            <h1 class="text-3xl md:text-4xl font-bold text-blue-800">ระบบวิเคราะห์การสมัครงาน</h1>
-            <p class="text-lg text-slate-600">แดชบอร์ดสรุปข้อมูลจากระบบจัดการการสมัครงาน</p>
-        </header>
+        return pymysql.connect(
+            host=st.secrets["database"]["host"],
+            port=port_int,
+            user=st.secrets["database"]["user"],
+            password=st.secrets["database"]["password"],
+            database=st.secrets["database"]["database"],
+            cursorclass=DictCursor,
+            connect_timeout=10,
+            ssl={}  # <--- (FIX) ใช้ {} เพื่อเปิด SSL
+        )
+    except Exception as e:
+        # โยน Error ออกไปให้ main() (Splash Screen) จัดการ
+        raise e
 
-        <!-- Navigation Tabs -->
-        <nav class="flex flex-wrap gap-2 mb-6">
-            <button class="tab-btn active text-sm md:text-base px-4 py-2 rounded-lg border-b-4 border-transparent hover:bg-blue-50 transition-all" data-tab="overview">
-                ภาพรวมระบบ
-            </button>
-            <button class="tab-btn text-sm md:text-base px-4 py-2 rounded-lg border-b-4 border-transparent hover:bg-blue-50 transition-all" data-tab="companies">
-                ข้อมูลบริษัท
-            </button>
-            <button class="tab-btn text-sm md:text-base px-4 py-2 rounded-lg border-b-4 border-transparent hover:bg-blue-50 transition-all" data-tab="seekers">
-                ข้อมูลผู้หางาน
-            </button>
-            <button class="tab-btn text-sm md:text-base px-4 py-2 rounded-lg border-b-4 border-transparent hover:bg-blue-50 transition-all" data-tab="jobs">
-                ข้อมูลประกาศงาน
-            </button>
-        </nav>
-
-        <!-- Tab Content Area -->
-        <main>
-            <!-- =======================
-                 Tab 1: ภาพรวม (Overview)
-                 ======================= -->
-            <section id="overview" class="tab-content active space-y-8">
-                <p class="text-base text-slate-700 bg-white p-4 rounded-lg shadow-sm">
-                    หน้านี้แสดงภาพรวมสถิติที่สำคัญที่สุดของระบบ (Key Metrics) รวมถึงแนวโน้มการสมัครงานในช่วงเวลาต่างๆ และสัดส่วนสถานะของใบสมัครทั้งหมด (เช่น รอดำเนินการ, เรียกสัมภาษณ์) เพื่อให้เห็นภาพรวมของประสิทธิภาพระบบ
-                </p>
+# --- 3. RUN QUERY FUNCTION (FIXED) ---
+def run_query(query, params=None, commit=False, fetch_one=False, fetch_all=False):
+    """
+    (MASTER VERSION v10)
+    แก้ไข Bug: ให้ return True เมื่อ Query (เช่น 'SELECT 1') สำเร็จ
+    แก้ไขให้จับ Stale Connection Errors (0, 2006, 2013, 2014), 
+    PyMySQL Bugs (IndexError, struct.error, AssertionError),
+    และ String Errors ('Packet sequence number wrong')
+    """
+    conn = init_connection()
+    if conn:
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                if commit:
+                    conn.commit()
+                    return True
+                elif fetch_one:
+                    return cursor.fetchone() # คืนค่า dict หรือ None (ถ้าไม่เจอ)
+                elif fetch_all:
+                    return cursor.fetchall() # คืนค่า list หรือ [] (ถ้าไม่เจอ)
                 
-                <!-- Key Metrics -->
-                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-blue-500">
-                        <h3 class="text-sm font-medium text-slate-500 uppercase">บริษัททั้งหมด</h3>
-                        <p id="metric-companies" class="text-4xl font-bold text-blue-800">0</p>
-                    </div>
-                    <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-green-500">
-                        <h3 class="text-sm font-medium text-slate-500 uppercase">ผู้หางานทั้งหมด</h3>
-                        <p id="metric-seekers" class="text-4xl font-bold text-green-800">0</p>
-                    </div>
-                    <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-indigo-500">
-                        <h3 class="text-sm font-medium text-slate-500 uppercase">ประกาศงาน (Active)</h3>
-                        <p id="metric-jobs" class="text-4xl font-bold text-indigo-800">0</p>
-                    </div>
-                    <div class="bg-white p-6 rounded-lg shadow-sm border-l-4 border-amber-500">
-                        <h3 class="text-sm font-medium text-slate-500 uppercase">การสมัครทั้งหมด</h3>
-                        <p id="metric-applications" class="text-4xl font-bold text-amber-800">0</p>
-                    </div>
-                </div>
-                
-                <!-- Charts -->
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    <div class="bg-white p-6 rounded-lg shadow-sm">
-                        <h3 class="text-xl font-semibold mb-4">แนวโน้มการสมัครงาน (30 วันย้อนหลัง)</h3>
-                        <div class="chart-container">
-                            <canvas id="applicationsChart"></canvas>
-                        </div>
-                    </div>
-                    <div class="bg-white p-6 rounded-lg shadow-sm">
-                        <h3 class="text-xl font-semibold mb-4">สัดส่วนสถานะใบสมัคร</h3>
-                        <div class="chart-container">
-                            <canvas id="statusChart"></canvas>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- =======================
-                 Tab 2: บริษัท (Companies)
-                 ======================= -->
-            <section id="companies" class="tab-content space-y-6">
-                <p class="text-base text-slate-700 bg-white p-4 rounded-lg shadow-sm">
-                    สำรวจข้อมูลบริษัทที่ลงทะเบียนในระบบ ค้นหาบริษัท และคลิกที่ชื่อบริษัทเพื่อดูรายละเอียดโปรไฟล์ และรายชื่องานทั้งหมดที่บริษัทนั้นๆ กำลังประกาศรับสมัคร (แสดงความสัมพันธ์ 1-to-Many ระหว่าง Company และ JobPost)
-                </p>
-                
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <!-- List Column -->
-                    <div class="md:col-span-1 bg-white p-4 rounded-lg shadow-sm">
-                        <input type="text" id="companySearch" class="w-full px-3 py-2 border rounded-lg mb-4" placeholder="ค้นหาชื่อบริษัท...">
-                        <ul id="companyList" class="data-list divide-y divide-gray-200">
-                            <!-- JS will populate this -->
-                        </ul>
-                    </div>
-                    <!-- Detail Column -->
-                    <div class="md:col-span-2 bg-white p-6 rounded-lg shadow-sm min-h-[300px]">
-                        <div id="companyDetail">
-                            <p class="text-slate-500 text-center mt-12">กรุณาเลือกบริษัทจากรายการด้านซ้าย</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- =========================
-                 Tab 3: ผู้หางาน (Job Seekers)
-                 ========================= -->
-            <section id="seekers" class="tab-content space-y-6">
-                <p class="text-base text-slate-700 bg-white p-4 rounded-lg shadow-sm">
-                    สำรวจข้อมูลผู้หางานในระบบ ค้นหาผู้หางาน และคลิกที่ชื่อเพื่อดูโปรไฟล์, ทักษะ (Skills), และประวัติการศึกษา (Education) รวมถึงประวัติการสมัครงานทั้งหมด (แสดงความสัมพันธ์ Many-to-Many ผ่านตาราง Application)
-                </p>
-                
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <!-- List Column -->
-                    <div class="md:col-span-1 bg-white p-4 rounded-lg shadow-sm">
-                        <input type="text" id="seekerSearch" class="w-full px-3 py-2 border rounded-lg mb-4" placeholder="ค้นหาชื่อผู้หางาน...">
-                        <ul id="seekerList" class="data-list divide-y divide-gray-200">
-                            <!-- JS will populate this -->
-                        </ul>
-                    </div>
-                    <!-- Detail Column -->
-                    <div class="md:col-span-2 bg-white p-6 rounded-lg shadow-sm min-h-[300px]">
-                        <div id="seekerDetail">
-                            <p class="text-slate-500 text-center mt-12">กรุณาเลือกผู้หางานจากรายการด้านซ้าย</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- ========================
-                 Tab 4: ประกาศงาน (Job Posts)
-                 ======================== -->
-            <section id="jobs" class="tab-content space-y-6">
-                <p class="text-base text-slate-700 bg-white p-4 rounded-lg shadow-sm">
-                    สำรวจประกาศงานทั้งหมดในระบบ ค้นหาตำแหน่งงาน และคลิกที่ชื่องานเพื่อดูรายละเอียด, คุณสมบัติ (Requirements) และที่สำคัญคือ "รายชื่อผู้สมัคร" สำหรับตำแหน่งนั้นๆ (แสดงความสามารถในการคัดกรองตามสไลด์ [115])
-                </p>
-                
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <!-- List Column -->
-                    <div class="md:col-span-1 bg-white p-4 rounded-lg shadow-sm">
-                        <input type="text" id="jobSearch" class="w-full px-3 py-2 border rounded-lg mb-4" placeholder="ค้นหาตำแหน่งงาน...">
-                        <ul id="jobList" class="data-list divide-y divide-gray-200">
-                            <!-- JS will populate this -->
-                        </ul>
-                    </div>
-                    <!-- Detail Column -->
-                    <div class="md:col-span-2 bg-white p-6 rounded-lg shadow-sm min-h-[300px]">
-                        <div id="jobDetail">
-                            <p class="text-slate-500 text-center mt-12">กรุณาเลือกประกาศงานจากรายการด้านซ้าย</p>
-                        </div>
-                    </div>
-                </div>
-            </section>
-        </main>
-
-    </div>
-
-    <script>
-        // Utility function to safely escape HTML to prevent XSS
-        function escapeHTML(str) {
-            return str.replace(/[&<>"']/g, function(m) {
-                return {
-                    '&': '&amp;',
-                    '<': '&lt;',
-                    '>': '&gt;',
-                    '"': '&quot;',
-                    "'": '&#39;'
-                }[m];
-            });
-        }
+                return True # (FIX) ถ้า Query สำเร็จ (เช่น 'SELECT 1') ให้ return True
         
-        // --- 1. MOCK DATA (based on Data Dictionary) ---
-        // ข้อมูลจำลองตามโครงสร้าง ER-Diagram [108] และ Data Dictionary [146-159]
-        const companies = [
-            { id: 1, name: 'TechNova Solutions Ltd.', email: 'hr@technova.com', address: '101 Cyber Tower, Ratchada, Bangkok', contact: '02-111-2222' },
-            { id: 2, name: 'CreativeFlow Agency', email: 'join@creativeflow.agency', address: '55 T-One Building, Sukhumvit 40', contact: '02-333-4444' },
-            { id: 3, name: 'CapitalBank (Thailand)', email: 'careers@capitalbank.th', address: '33 Sathorn Rd, Bangkok', contact: '02-555-6666' },
-            { id: 4, name: 'GreenSprout Start-up', email: 'hello@greensprout.io', address: 'Remote (Thailand)', contact: '081-777-8888' }
-        ];
-
-        const jobSeekers = [
-            { id: 101, name: 'วริศรา สระศรีสม', email: 'warisara@email.com', education: 'B.Eng. Computer Engineering', skills: 'React, TypeScript, Node.js, Next.js', experience: '2 years as Frontend Developer' },
-            { id: 102, name: 'จิดาภา เติมสินสุข', email: 'jidapa@email.com', education: 'B.A. Communication Design', skills: 'Figma, Sketch, Adobe XD, User Research', experience: '3 years as UX/UI Designer' },
-            { id: 103, name: 'ธีรดา พุ่มเจริญ', email: 'theerada@email.com', education: 'M.Sc. Data Science', skills: 'SQL, Python (Pandas, Scikit-learn), Tableau', experience: '4 years as Data Analyst' },
-            { id: 104, name: 'สมชาย ใจดี', email: 'somchai@email.com', education: 'B.B.A. Marketing', skills: 'SEO, Google Ads, Content Strategy', experience: '5 years as Digital Marketing Specialist' },
-            { id: 105, name: 'อาทิตย์ โปรแกรมเมอร์', email: 'arthit@email.com', education: 'B.Eng. Computer Engineering', skills: 'Java, Spring Boot, Microservices, Kafka', experience: '8 years as Senior Backend Developer' }
-        ];
-
-        const jobPosts = [
-            { id: 1001, companyId: 1, position: 'Frontend Developer (React)', description: 'Build beautiful and responsive user interfaces for our web applications.', requirements: '2+ years React, TypeScript, HTML/CSS. Strong understanding of REST APIs.', postDate: '2025-11-01', closingDate: '2025-12-01' },
-            { id: 1002, companyId: 2, position: 'UX/UI Designer', description: 'Design user-centric experiences for our clients projects.', requirements: '3+ years in Figma, Sketch. A strong portfolio is required.', postDate: '2025-11-02', closingDate: '2025-12-02' },
-            { id: 1003, companyId: 1, position: 'Senior Backend Developer (Java)', description: 'Develop and maintain our core banking microservices.', requirements: '5+ years Java, Spring Boot, SQL. Experience with Kafka is a plus.', postDate: '2025-10-25', closingDate: '2025-11-25' },
-            { id: 1004, companyId: 3, position: 'Financial Analyst', description: 'Analyze financial data and create reports for management.', requirements: 'Bachelors in Finance or Accounting. 2+ years experience.', postDate: '2025-11-05', closingDate: '2025-11-30' },
-            { id: 1005, companyId: 2, position: 'Digital Marketing Specialist', description: 'Manage SEO/SEM and social media campaigns.', requirements: '4+ years in digital marketing, proven experience with Google Analytics.', postDate: '2025-10-30', closingDate: '2025-11-30' }
-        ];
-
-        const applications = [
-            { id: 5001, jobId: 1001, seekerId: 101, applyDate: '2025-11-02', status: 'interview' },
-            { id: 5002, jobId: 1002, seekerId: 102, applyDate: '2025-11-03', status: 'pending' },
-            { id: 5003, jobId: 1003, seekerId: 105, applyDate: '2025-10-26', status: 'interview' },
-            { id: 5004, jobId: 1004, seekerId: 103, applyDate: '2025-11-06', status: 'reviewing' },
-            { id: 5005, jobId: 1005, seekerId: 104, applyDate: '2025-11-01', status: 'pending' },
-            { id: 5006, jobId: 1001, seekerId: 103, applyDate: '2025-11-04', status: 'rejected' },
-            { id: 5007, jobId: 1003, seekerId: 101, applyDate: '2025-10-28', status: 'rejected' },
-            { id: 5008, jobId: 1002, seekerId: 101, applyDate: '2025-11-05', status: 'pending' }
-        ];
-
-        // --- 2. Chart Utility Functions ---
-        
-        // ฟังก์ชันสำหรับ Tooltip ของ Chart.js (ตามข้อกำหนด)
-        const getOrCreateTooltip = (chart) => {
-            let tooltipEl = chart.canvas.parentNode.querySelector('div');
-            if (!tooltipEl) {
-                tooltipEl = document.createElement('div');
-                tooltipEl.style.background = 'rgba(0, 0, 0, 0.7)';
-                tooltipEl.style.borderRadius = '3px';
-                tooltipEl.style.color = 'white';
-                tooltipEl.style.opacity = 1;
-                tooltipEl.style.pointerEvents = 'none';
-                tooltipEl.style.position = 'absolute';
-                tooltipEl.style.transform = 'translate(-50%, 0)';
-                tooltipEl.style.transition = 'all .1s ease';
-                tooltipEl.style.padding = '6px';
-                tooltipEl.style.fontSize = '12px';
-                
-                const table = document.createElement('table');
-                table.style.margin = '0px';
-
-                tooltipEl.appendChild(table);
-                chart.canvas.parentNode.appendChild(tooltipEl);
-            }
-            return tooltipEl;
-        };
-
-        const externalTooltipHandler = (context) => {
-            const {chart, tooltip} = context;
-            const tooltipEl = getOrCreateTooltip(chart);
-
-            if (tooltip.opacity === 0) {
-                tooltipEl.style.opacity = 0;
-                return;
-            }
-
-            if (tooltip.body) {
-                const titleLines = tooltip.title || [];
-                const bodyLines = tooltip.body.map(b => b.lines);
-
-                const tableHead = document.createElement('thead');
-                titleLines.forEach(title => {
-                    const tr = document.createElement('tr');
-                    tr.style.borderWidth = 0;
-                    const th = document.createElement('th');
-                    th.style.borderWidth = 0;
-                    th.style.textAlign = 'left';
-                    const text = document.createTextNode(title);
-                    th.appendChild(text);
-                    tr.appendChild(th);
-                    tableHead.appendChild(tr);
-                });
-
-                const tableBody = document.createElement('tbody');
-                bodyLines.forEach((body, i) => {
-                    const colors = tooltip.labelColors[i];
-                    const span = document.createElement('span');
-                    span.style.background = colors.backgroundColor;
-                    span.style.borderColor = colors.borderColor;
-                    span.style.borderWidth = '2px';
-                    span.style.marginRight = '10px';
-                    span.style.height = '10px';
-                    span.style.width = '10px';
-                    span.style.display = 'inline-block';
-
-                    const tr = document.createElement('tr');
-                    tr.style.backgroundColor = 'inherit';
-                    tr.style.borderWidth = 0;
-
-                    const td = document.createElement('td');
-                    td.style.borderWidth = 0;
-
-                    const text = document.createTextNode(body);
-
-                    td.appendChild(span);
-                    td.appendChild(text);
-                    tr.appendChild(td);
-                    tableBody.appendChild(tr);
-                });
-
-                const tableRoot = tooltipEl.querySelector('table');
-                while (tableRoot.firstChild) {
-                    tableRoot.firstChild.remove();
-                }
-                tableRoot.appendChild(tableHead);
-                tableRoot.appendChild(tableBody);
-            }
-
-            const {offsetLeft: positionX, offsetTop: positionY} = chart.canvas;
-            tooltipEl.style.opacity = 1;
-            tooltipEl.style.left = positionX + tooltip.caretX + 'px';
-            tooltipEl.style.top = positionY + tooltip.caretY + 'px';
-            tooltipEl.style.transform = 'translate(-50%, -100%)';
-            tooltipEl.style.padding = tooltip.options.padding + 'px ' + tooltip.options.padding + 'px';
-        };
-
-        // ฟังก์ชันสำหรับตัดข้อความในแกน X (ตามข้อกำหนด 16-char)
-        function formatLabel(value, maxChars = 16) {
-            const str = String(value);
-            if (str.length > maxChars) {
-                return str.substring(0, maxChars) + '...';
-            }
-            return str;
-        }
-
-        
-        document.addEventListener('DOMContentLoaded', () => {
+        # (FIX) จับ Error การเชื่อมต่อที่ตายแล้ว (Stale Connection) ทั้งหมด
+        except (pymysql.Error, IndexError, struct.error, AssertionError) as e:
             
-            // --- 3. Tab Navigation Logic ---
-            const tabButtons = document.querySelectorAll('.tab-btn');
-            const tabContents = document.querySelectorAll('.tab-content');
-
-            tabButtons.forEach(button => {
-                button.addEventListener('click', () => {
-                    const tabName = button.dataset.tab;
-                    
-                    tabButtons.forEach(btn => btn.classList.remove('active'));
-                    button.classList.add('active');
-                    
-                    tabContents.forEach(content => {
-                        content.classList.remove('active');
-                        if (content.id === tabName) {
-                            content.classList.add('active');
-                        }
-                    });
-                });
-            });
-
-            // --- 4. Render Tab 1: Overview ---
-            function renderOverviewTab() {
-                // 4.1. Key Metrics
-                document.getElementById('metric-companies').textContent = companies.length;
-                document.getElementById('metric-seekers').textContent = jobSeekers.length;
-                document.getElementById('metric-jobs').textContent = jobPosts.length;
-                document.getElementById('metric-applications').textContent = applications.length;
-
-                // 4.2. Applications Line Chart
-                const appDates = applications.map(app => app.applyDate.split('T')[0]);
-                const appCounts = appDates.reduce((acc, date) => {
-                    acc[date] = (acc[date] || 0) + 1;
-                    return acc;
-                }, {});
-                const sortedDates = Object.keys(appCounts).sort();
-                const lineCtx = document.getElementById('applicationsChart').getContext('2d');
-                new Chart(lineCtx, {
-                    type: 'line',
-                    data: {
-                        labels: sortedDates,
-                        datasets: [{
-                            label: 'จำนวนการสมัคร',
-                            data: sortedDates.map(date => appCounts[date]),
-                            borderColor: '#2563eb', // blue-600
-                            backgroundColor: 'rgba(37, 99, 235, 0.1)',
-                            fill: true,
-                            tension: 0.1
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false, // ตามข้อกำหนด
-                        plugins: {
-                            legend: { display: false },
-                            tooltip: {
-                                enabled: false,
-                                position: 'nearest',
-                                external: externalTooltipHandler
-                            }
-                        },
-                        scales: {
-                            x: {
-                                ticks: {
-                                    callback: (val, index) => formatLabel(sortedDates[index])
-                                }
-                            }
-                        }
-                    }
-                });
-                
-                // 4.3. Status Donut Chart
-                const statusCounts = applications.reduce((acc, app) => {
-                    acc[app.status] = (acc[app.status] || 0) + 1;
-                    return acc;
-                }, {});
-                const statusLabels = Object.keys(statusCounts);
-                const statusData = Object.values(statusCounts);
-                const donutCtx = document.getElementById('statusChart').getContext('2d');
-                new Chart(donutCtx, {
-                    type: 'doughnut',
-                    data: {
-                        labels: statusLabels.map(s => s.charAt(0).toUpperCase() + s.slice(1)),
-                        datasets: [{
-                            label: 'สถานะใบสมัคร',
-                            data: statusData,
-                            backgroundColor: ['#f59e0b', '#3b82f6', '#10b981', '#ef4444', '#8b5cf6'], // amber, blue, green, red, violet
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false, // ตามข้อกำหนด
-                        plugins: {
-                            legend: { position: 'bottom' },
-                            tooltip: {
-                                enabled: false,
-                                position: 'nearest',
-                                external: externalTooltipHandler
-                            }
-                        }
-                    }
-                });
-            }
-
-            // --- 5. Render Tab 2: Companies ---
-            function renderCompanyTab() {
-                const listEl = document.getElementById('companyList');
-                const detailEl = document.getElementById('companyDetail');
-                const searchEl = document.getElementById('companySearch');
-                
-                function showCompanyDetail(companyId) {
-                    const company = companies.find(c => c.id === companyId);
-                    const jobs = jobPosts.filter(j => j.companyId === companyId);
-                    
-                    let jobsHtml = jobs.length > 0
-                        ? jobs.map(job => `<li class="py-2 px-3 rounded-md bg-indigo-50">${escapeHTML(job.position)}</li>`).join('')
-                        : '<p class="text-slate-500">ยังไม่มีประกาศงาน</p>';
-
-                    detailEl.innerHTML = `
-                        <h2 class="text-2xl font-bold mb-2">${escapeHTML(company.name)}</h2>
-                        <p class="text-slate-600 mb-1"><strong>อีเมล:</strong> ${escapeHTML(company.email)}</p>
-                        <p class="text-slate-600 mb-1"><strong>ติดต่อ:</strong> ${escapeHTML(company.contact)}</p>
-                        <p class="text-slate-600 mb-4"><strong>ที่อยู่:</strong> ${escapeHTML(company.address)}</p>
-                        <hr class="my-4">
-                        <h3 class="text-xl font-semibold mb-3">ประกาศงานของบริษัทนี้:</h3>
-                        <ul class="space-y-2">${jobsHtml}</ul>
-                    `;
-                }
-                
-                function populateList(filter = '') {
-                    listEl.innerHTML = '';
-                    const filteredCompanies = companies.filter(c => c.name.toLowerCase().includes(filter.toLowerCase()));
-                    
-                    if (filteredCompanies.length === 0) {
-                        listEl.innerHTML = '<li class="p-4 text-slate-500">ไม่พบข้อมูลบริษัท</li>';
-                        return;
-                    }
-                    
-                    filteredCompanies.forEach(company => {
-                        const li = document.createElement('li');
-                        li.className = 'p-4 hover:bg-blue-100 cursor-pointer rounded-lg transition-colors';
-                        li.textContent = company.name;
-                        li.dataset.id = company.id;
-                        li.addEventListener('click', () => {
-                            showCompanyDetail(company.id);
-                            // Highlight active item
-                            listEl.querySelectorAll('li').forEach(item => item.classList.remove('bg-blue-200', 'font-semibold'));
-                            li.classList.add('bg-blue-200', 'font-semibold');
-                        });
-                        listEl.appendChild(li);
-                    });
-                }
-                
-                searchEl.addEventListener('input', (e) => populateList(e.target.value));
-                populateList(); // Initial load
-            }
-
-            // --- 6. Render Tab 3: Job Seekers ---
-            function renderSeekerTab() {
-                const listEl = document.getElementById('seekerList');
-                const detailEl = document.getElementById('seekerDetail');
-                const searchEl = document.getElementById('seekerSearch');
-
-                function showSeekerDetail(seekerId) {
-                    const seeker = jobSeekers.find(s => s.id === seekerId);
-                    const seekerApps = applications.filter(app => app.seekerId === seekerId);
-                    
-                    let appsHtml = seekerApps.length > 0
-                        ? seekerApps.map(app => {
-                            const job = jobPosts.find(j => j.id === app.jobId);
-                            const company = companies.find(c => c.id === job.companyId);
-                            return `
-                                <li class="py-2 px-3 rounded-md bg-green-50">
-                                    <span class="font-semibold">${escapeHTML(job.position)}</span> at ${escapeHTML(company.name)}
-                                    <span class="ml-2 px-2 py-0.5 rounded-full text-xs ${app.status === 'interview' ? 'bg-blue-200 text-blue-800' : app.status === 'rejected' ? 'bg-red-200 text-red-800' : 'bg-gray-200 text-gray-800'}">
-                                        ${escapeHTML(app.status)}
-                                    </span>
-                                </li>`;
-                        }).join('')
-                        : '<p class="text-slate-500">ยังไม่มีประวัติการสมัครงาน</p>';
-
-                    detailEl.innerHTML = `
-                        <h2 class="text-2xl font-bold mb-2">${escapeHTML(seeker.name)}</h2>
-                        <p class="text-slate-600 mb-1"><strong>อีเมล:</strong> ${escapeHTML(seeker.email)}</p>
-                        <p class="text-slate-600 mb-1"><strong>การศึกษา:</strong> ${escapeHTML(seeker.education)}</p>
-                        <p class="text-slate-600 mb-1"><strong>ประสบการณ์:</strong> ${escapeHTML(seeker.experience)}</p>
-                        <p class="text-slate-600 mb-4"><strong>ทักษะ:</strong> ${escapeHTML(seeker.skills)}</p>
-                        <hr class="my-4">
-                        <h3 class="text-xl font-semibold mb-3">ประวัติการสมัครงาน:</h3>
-                        <ul class="space-y-2">${appsHtml}</ul>
-                    `;
-                }
-
-                function populateList(filter = '') {
-                    listEl.innerHTML = '';
-                    const filteredSeekers = jobSeekers.filter(s => s.name.toLowerCase().includes(filter.toLowerCase()));
-                    
-                    if (filteredSeekers.length === 0) {
-                        listEl.innerHTML = '<li class="p-4 text-slate-500">ไม่พบข้อมูลผู้หางาน</li>';
-                        return;
-                    }
-
-                    filteredSeekers.forEach(seeker => {
-                        const li = document.createElement('li');
-                        li.className = 'p-4 hover:bg-blue-100 cursor-pointer rounded-lg transition-colors';
-                        li.textContent = seeker.name;
-                        li.dataset.id = seeker.id;
-                        li.addEventListener('click', () => {
-                            showSeekerDetail(seeker.id);
-                            listEl.querySelectorAll('li').forEach(item => item.classList.remove('bg-blue-200', 'font-semibold'));
-                            li.classList.add('bg-blue-200', 'font-semibold');
-                        });
-                        listEl.appendChild(li);
-                    });
-                }
-                
-                searchEl.addEventListener('input', (e) => populateList(e.target.value));
-                populateList(); // Initial load
-            }
+            is_stale_connection_error = True # (FIX) เหมาว่า "ใช่" ไว้ก่อน
             
-            // --- 7. Render Tab 4: Job Posts ---
-            function renderJobTab() {
-                const listEl = document.getElementById('jobList');
-                const detailEl = document.getElementById('jobDetail');
-                const searchEl = document.getElementById('jobSearch');
-
-                function showJobDetail(jobId) {
-                    const job = jobPosts.find(j => j.id === jobId);
-                    const company = companies.find(c => c.id === job.companyId);
-                    const jobApps = applications.filter(app => app.jobId === jobId);
-
-                    let appsHtml = jobApps.length > 0
-                        ? jobApps.map(app => {
-                            const seeker = jobSeekers.find(s => s.id === app.seekerId);
-                            return `
-                                <li class="py-2 px-3 rounded-md bg-amber-50 flex justify-between items-center">
-                                    <div>
-                                        <span class="font-semibold">${escapeHTML(seeker.name)}</span>
-                                        <span class="text-sm text-slate-600 ml-2">(${escapeHTML(seeker.skills)})</span>
-                                    </div>
-                                    <span class="px-2 py-0.5 rounded-full text-xs ${app.status === 'interview' ? 'bg-blue-200 text-blue-800' : app.status === 'rejected' ? 'bg-red-200 text-red-800' : 'bg-gray-200 text-gray-800'}">
-                                        ${escapeHTML(app.status)}
-                                    </span>
-                                </li>`;
-                        }).join('')
-                        : '<p class="text-slate-500">ยังไม่มีผู้สมัครสำหรับงานนี้</p>';
-
-                    detailEl.innerHTML = `
-                        <h2 class="text-2xl font-bold mb-1">${escapeHTML(job.position)}</h2>
-                        <p class="text-lg text-slate-600 mb-2 font-medium">${escapeHTML(company.name)}</p>
-                        <p class="text-sm text-slate-500 mb-4">ประกาศเมื่อ: ${job.postDate} | ปิดรับ: ${job.closingDate}</p>
-                        <p class="text-slate-700 mb-2"><strong>รายละเอียดงาน:</strong> ${escapeHTML(job.description)}</p>
-                        <p class="text-slate-700 mb-4"><strong>คุณสมบัติ:</strong> ${escapeHTML(job.requirements)}</p>
-                        <hr class="my-4">
-                        <h3 class="text-xl font-semibold mb-3">รายชื่อผู้สมัคร (${jobApps.length} คน):</h3>
-                        <ul class="space-y-2">${appsHtml}</ul>
-                    `;
-                }
-
-                function populateList(filter = '') {
-                    listEl.innerHTML = '';
-                    const filteredJobs = jobPosts.filter(j => j.position.toLowerCase().includes(filter.toLowerCase()));
-                    
-                    if (filteredJobs.length === 0) {
-                        listEl.innerHTML = '<li class="p-4 text-slate-500">ไม่พบข้อมูลประกาศงาน</li>';
-                        return;
-                    }
-
-                    filteredJobs.forEach(job => {
-                        const li = document.createElement('li');
-                        li.className = 'p-4 hover:bg-blue-100 cursor-pointer rounded-lg transition-colors';
-                        li.innerHTML = `
-                            <span class="font-medium">${escapeHTML(job.position)}</span>
-                            <span class="block text-sm text-slate-600">${escapeHTML(companies.find(c => c.id === job.companyId).name)}</span>
-                        `;
-                        li.dataset.id = job.id;
-                        li.addEventListener('click', () => {
-                            showJobDetail(job.id);
-                            listEl.querySelectorAll('li').forEach(item => item.classList.remove('bg-blue-200'));
-                            li.classList.add('bg-blue-200');
-                        });
-                        listEl.appendChild(li);
-                    });
-                }
+            # (FIX) ตรวจสอบว่าใช่ "Error SQL ที่ผู้ใช้ทำผิด" หรือไม่
+            if isinstance(e, pymysql.Error):
+                error_code = e.args[0] if e.args else -1
                 
-                searchEl.addEventListener('input', (e) => populateList(e.target.value));
-                populateList(); // Initial load
-            }
+                # 1146 = Table doesn't exist
+                # 1064 = SQL syntax error
+                # 1054 = Unknown column
+                # 1046 = No database selected
+                # 1045 = Access denied (Password ผิด)
+                if error_code in [1045, 1046, 1054, 1064, 1146]:
+                    is_stale_connection_error = False # ไม่ใช่ Stale Error
+                    st.error(f"Query Error (SQL): {e}") # แสดง Error SQL จริง
+                
+                # 3. (NEW) Check for the string error message!
+                elif "Packet sequence number wrong" in str(e):
+                    is_stale_connection_error = True # นี่คือ Stale Error
+            
+            # (FIX) ถ้าไม่ใช่ Error SQL ที่เรารู้จัก...
+            # ให้เหมาว่ามันคือ Stale Connection Bug
+            if is_stale_connection_error:
+                st.cache_resource.clear() 
+                st.error("การเชื่อมต่อฐานข้อมูลหมดอายุ กรุณากดปุ่ม 'เข้าสู่ระบบ' อีกครั้ง หรือ Refresh หน้า")
+            
+            return None # (FIX) คืนค่า None เมื่อเกิด Error เท่านั้น
 
-            // --- 8. Initial Render ---
-            renderOverviewTab();
-            renderCompanyTab();
-            renderSeekerTab();
-            renderJobTab();
-        });
-    </script>
-</body>
-</html>
+    else:
+        pass 
+    return None # คืนค่า None ถ้า Connection ล้มเหลว
+
+# --- 4. UTILITIES ---
+def make_hash(password):
+    return hashlib.sha256(str.encode(password)).hexdigest()
+
+def check_login(username, password):
+    hashed_pw = make_hash(password)
+    comp = run_query("SELECT * FROM Company WHERE c_username = %s AND c_password_hash = %s",
+                     (username, hashed_pw), fetch_one=True)
+    if comp: return "Company", comp
+    seeker = run_query("SELECT * FROM JobSeeker WHERE js_username = %s AND js_password_hash = %s",
+                       (username, hashed_pw), fetch_one=True)
+    if seeker: return "JobSeeker", seeker
+    return None, None
+
+def set_login_view(view):
+    st.session_state.login_view = view
+
+# --- 5. AUTHENTICATION PAGES (with Forgot Username) ---
+def login_register_page():
+    st.title("Job Application System")
+    
+    tab1, tab2 = st.tabs(["เข้าสู่ระบบ (Login)", "ลงทะเบียน (Register)"])
+
+    with tab1:
+        if st.session_state.login_view == 'login':
+            st.write("### ยินดีต้อนรับกลับมา!")
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            if st.button("เข้าสู่ระบบ", use_container_width=True):
+                role, user = check_login(username, password)
+                if user:
+                    st.session_state['logged_in'] = True
+                    st.session_state['user_role'] = role
+                    st.session_state['user_info'] = user
+                    st.toast(f"Login สำเร็จ! ยินดีต้อนรับ {username}")
+                    time.sleep(1); st.rerun()
+                else:
+                    # (FIX) โลจิกนี้ทำงานถูกต้องแล้ว
+                    if user is None and run_query("SELECT 1") is not None: 
+                        st.error("Username หรือ Password ไม่ถูกต้อง")
+            
+            st.divider()
+            st.button("ลืม Username?", on_click=set_login_view, args=['forgot_username'], use_container_width=True, type="secondary")
+
+        elif st.session_state.login_view == 'forgot_username':
+            st.write("### ค้นหา Username")
+            st.caption("กรอกอีเมลของคุณเพื่อค้นหา Username ที่ผูกไว้")
+            
+            with st.form("forgot_username_form"):
+                email = st.text_input("Email ที่ลงทะเบียนไว้")
+                submitted = st.form_submit_button("ค้นหา")
+                
+                if submitted:
+                    if email:
+                        username_found = None
+                        user_comp = run_query("SELECT c_username FROM Company WHERE c_email = %s", (email,), fetch_one=True)
+                        if user_comp:
+                            username_found = user_comp['c_username']
+                        else:
+                            user_seeker = run_query("SELECT js_username FROM JobSeeker WHERE js_email = %s", (email,), fetch_one=True)
+                            if user_seeker:
+                                username_found = user_seeker['js_username']
+                        
+                        if username_found:
+                            st.success(f"พบ Username ของคุณ: **{username_found}**")
+                        else:
+                            st.error("ไม่พบ Username ที่ผูกกับอีเมลนี้")
+                    else:
+                        st.warning("กรุณากรอกอีเมล")
+            
+            st.button("กลับไปหน้า Login", on_click=set_login_view, args=['login'], use_container_width=True, type="secondary")
+
+    with tab2:
+        st.write("### สร้างบัญชีใหม่")
+        user_type = st.selectbox("คุณคือใคร?", ["ผู้หางาน (Job Seeker)", "บริษัท (Company)"])
+        if "Company" in user_type:
+            with st.form("reg_company"):
+                c_user, c_pass = st.text_input("Username *"), st.text_input("Password *", type="password")
+                c_name, c_email = st.text_input("ชื่อบริษัท *"), st.text_input("Email *")
+                c_addr, c_contact = st.text_area("ที่อยู่"), st.text_input("เบอร์ติดต่อ")
+                if st.form_submit_button("ยืนยันการลงทะเบียน"):
+                    if c_user and c_pass and c_name and c_email:
+                        sql = "INSERT INTO Company (c_username, c_password_hash, c_name, c_email, c_address, c_contact_info) VALUES (%s,%s,%s,%s,%s,%s)"
+                        if run_query(sql, (c_user, make_hash(c_pass), c_name, c_email, c_addr, c_contact), commit=True):
+                            st.success("ลงทะเบียนบริษัทสำเร็จ! กรุณาเข้าสู่ระบบ")
+                    else:
+                        st.warning("กรุณากรอกช่องที่มีเครื่องหมาย * ให้ครบ")
+        else:
+             with st.form("reg_seeker"):
+                j_user, j_pass = st.text_input("Username *"), st.text_input("Password *", type="password")
+                j_name, j_email = st.text_input("ชื่อ-นามสกุล *"), st.text_input("Email *")
+                j_edu, j_skill, j_exp = st.text_input("ระดับการศึกษา"), st.text_area("ทักษะ (Skills)"), st.text_area("ประสบการณ์")
+                if st.form_submit_button("ยืนยันการลงทะเบียน"):
+                     if j_user and j_pass and j_name and j_email:
+                        sql = "INSERT INTO JobSeeker (js_username, js_password_hash, js_full_name, js_email, js_education, js_skills, js_experience) VALUES (%s,%s,%s,%s,%s,%s,%s)"
+                        if run_query(sql, (j_user, make_hash(j_pass), j_name, j_email, j_edu, j_skill, j_exp), commit=True):
+                            st.success("ลงทะเบียนผู้หางานสำเร็จ! กรุณาเข้าสู่ระบบ")
+                     else:
+                        st.warning("กรุณากรอกช่องที่มีเครื่องหมาย * ให้ครบ")
+
+# --- 6. COMPANY DASHBOARD (OPTIMIZED & UPDATED) ---
+def company_dashboard(user):
+    st.subheader(f"Dashboard: {user['c_name']}")
+    tab1, tab2, tab3 = st.tabs(["ประกาศงานของคุณ", "ลงประกาศงานใหม่", "จัดการใบสมัคร"])
+    
+    with tab1:
+        st.write("### งานที่คุณเปิดรับอยู่ในขณะนี้")
+        jobs = run_query("SELECT * FROM JobPost WHERE j_company_id = %s ORDER BY j_post_date DESC", (user['c_id'],), fetch_all=True)
+        if jobs:
+            for job in jobs:
+                with st.container(border=True):
+                    st.write(f"**{job['j_position']}**")
+                    st.caption(f"ลงประกาศเมื่อ: {job['j_post_date']} | ปิดรับ: {job['j_closing_date']}")
+                    with st.expander("ดูรายละเอียด"):
+                        st.write(f"**รายละเอียด:** {job['j_description']}")
+                        st.write(f"**คุณสมบัติ:** {job['j_requirements']}")
+                        if st.button("ลบประกาศ", key=f"del_{job['j_id']}"):
+                            run_query("DELETE FROM JobPost WHERE j_id = %s", (job['j_id'],), commit=True)
+                            st.toast("ลบประกาศงานสำเร็จ!"); time.sleep(1); st.rerun()
+        else:
+            st.info("บริษัทของคุณยังไม่มีประกาศงานที่เปิดรับในขณะนี้")
+    
+    with tab2:
+        st.write("### กรอกรายละเอียดตำแหน่งงาน")
+        with st.form("post_job_form"):
+            j_pos = st.text_input("ชื่อตำแหน่ง (Position) *", placeholder="เช่น Senior Marketing Officer")
+            j_desc = st.text_area("รายละเอียดงาน (Job Description)", height=150)
+            j_req = st.text_area("คุณสมบัติ (Requirements)", height=150, placeholder="เช่น วุฒิป.ตรี, ประสบการณ์ 2 ปี...")
+            default_close = datetime.date.today() + datetime.timedelta(days=30)
+            j_close = st.date_input("วันปิดรับสมัคร", value=default_close)
+            if st.form_submit_button("ยืนยันการลงประกาศ"):
+                if j_pos:
+                    sql = "INSERT INTO JobPost (j_company_id, j_position, j_description, j_requirements, j_post_date, j_closing_date) VALUES (%s, %s, %s, %s, CURDATE(), %s)"
+                    if run_query(sql, (user['c_id'], j_pos, j_desc, j_req, j_close), commit=True):
+                        st.success(f"ลงประกาศตำแหน่ง '{j_pos}' เรียบร้อยแล้ว!"); time.sleep(1.5); st.rerun()
+                else:
+                    st.error("กรุณาระบุชื่อตำแหน่งงาน")
+
+    with tab3:
+        st.write("### รายชื่อผู้สมัครแยกตามตำแหน่งงาน")
+        my_jobs = run_query("SELECT j_id, j_position FROM JobPost WHERE j_company_id = %s", (user['c_id'],), fetch_all=True)
+        
+        if my_jobs:
+            job_ids = [job['j_id'] for job in my_jobs]
+            
+            if job_ids: 
+                placeholders = ','.join(['%s'] * len(job_ids))
+                sql_all_apps = f"""
+                    SELECT Application.*, JobSeeker.js_full_name, JobSeeker.js_email, JobSeeker.js_skills, JobSeeker.js_experience
+                    FROM Application
+                    JOIN JobSeeker ON Application.app_job_seeker_id = JobSeeker.js_id
+                    WHERE app_job_id IN ({placeholders})
+                    ORDER BY app_apply_date DESC
+                """
+                all_applicants = run_query(sql_all_apps, tuple(job_ids), fetch_all=True)
+                
+                applicants_by_job = {}
+                if all_applicants:
+                    for app in all_applicants:
+                        job_id = app['app_job_id']
+                        if job_id not in applicants_by_job:
+                            applicants_by_job[job_id] = []
+                        applicants_by_job[job_id].append(app)
+            else:
+                applicants_by_job = {}
+
+            for job in my_jobs:
+                job_id = job['j_id']
+                applicants = applicants_by_job.get(job_id, [])
+                count = len(applicants)
+
+                with st.expander(f"ตำแหน่ง: {job['j_position']} ({count} คนสมัคร)"):
+                    if applicants:
+                        for app in applicants:
+                            with st.container(border=True):
+                                col1, col2 = st.columns([3, 2])
+                                with col1:
+                                    st.write(f"**{app['js_full_name']}**")
+                                    st.caption(f"Email: {app['js_email']} | สมัครเมื่อ: {app['app_apply_date']}")
+                                    st.write(f"**Skills:** {app['js_skills']}")
+                                    with st.expander("ดูประสบการณ์ทำงาน"): st.write(app['js_experience'])
+                                with col2:
+                                    st.write("#### อัปเดตสถานะ")
+                                    status_options = ['pending', 'reviewing', 'interview', 'rejected', 'offered']
+                                    current_index = status_options.index(app['app_status']) if app['app_status'] in status_options else 0
+                                    new_status = st.selectbox("เลือกสถานะ:", status_options, index=current_index, key=f"st_{app['app_id']}")
+                                    if st.button("บันทึก", key=f"save_{app['app_id']}"):
+                                        run_query("UPDATE Application SET app_status = %s WHERE app_id = %s", (new_status, app['app_id']), commit=True)
+                                        st.toast(f"อัปเดตสถานะของ {app['js_full_name']} แล้ว!"); time.sleep(1); st.rerun()
+                    else:
+                        st.info("ยังไม่มีผู้สมัครในตำแหน่งนี้")
+        else:
+            st.warning("กรุณาลงประกาศงานก่อน เพื่อให้มีผู้สมัคร")
+
+# --- 7. JOB SEEKER DASHBOARD (OPTIMIZED & UPDATED) ---
+def seeker_dashboard(user):
+    st.subheader(f"สวัสดีคุณ {user['js_full_name']}")
+    tab1, tab2 = st.tabs(["ค้นหางาน", "สถานะการสมัคร"])
+
+    my_apps_data = run_query("SELECT app_job_id, app_status FROM Application WHERE app_job_seeker_id=%s", (user['js_id'],), fetch_all=True)
+    applied_jobs = {app['app_job_id']: app['app_status'] for app in my_apps_data} if my_apps_data else {}
+
+    with tab1:
+        st.write("### ค้นหาตำแหน่งงานที่ใช่สำหรับคุณ")
+        col1, col2 = st.columns([3, 1])
+        with col1: search_query = st.text_input("ค้นหาจากชื่อตำแหน่ง หรือ ชื่อบริษัท", placeholder="พิมพ์คำค้นหา...")
+        with col2: st.write(""); st.write(""); search_clicked = st.button("ค้นหา", use_container_width=True)
+        
+        sql = "SELECT JobPost.*, Company.c_name FROM JobPost JOIN Company ON JobPost.j_company_id = Company.c_id WHERE j_closing_date >= CURDATE()"
+        params = []
+        if search_query:
+            sql += " AND (LOWER(JobPost.j_position) LIKE LOWER(%s) OR LOWER(Company.c_name) LIKE LOWER(%s))"
+            search_term = f"%{search_query}%"; params.extend([search_term, search_term])
+        sql += " ORDER BY j_post_date DESC"
+        
+        jobs = run_query(sql, tuple(params) if params else None, fetch_all=True)
+        
+        if jobs:
+            st.success(f"ค้นพบ {len(jobs)} ตำแหน่งงาน")
+            for job in jobs:
+                with st.container(border=True):
+                    c1, c2 = st.columns([3, 1])
+                    with c1:
+                        st.write(f"### {job['j_position']}")
+                        st.write(f"{job['c_name']}")
+                        st.caption(f"ลงประกาศเมื่อ: {job['j_post_date']} | ปิดรับ: {job['j_closing_date']}")
+                    with c2:
+                        job_id = job['j_id']
+                        if job_id in applied_jobs:
+                            st.info(f"สถานะ: {applied_jobs[job_id]}")
+                        else:
+                            if st.button("สมัครทันที", key=f"apply_{job_id}", use_container_width=True):
+                                run_query("INSERT INTO Application (app_job_id, app_job_seeker_id, app_apply_date) VALUES (%s, %s, CURDATE())", (job_id, user['js_id']), commit=True)
+                                st.toast("ส่งใบสมัครสำเร็จ!"); time.sleep(1); st.rerun()
+                    with st.expander("รายละเอียดงาน"):
+                        st.write(f"**Job Description:**\n{job['j_description']}")
+                        st.write(f"**Requirements:**\n{job['j_requirements']}")
+        else:
+            st.warning("ไม่พบตำแหน่งงานที่คุณค้นหา")
+            
+    with tab2:
+        st.write("### ประวัติการสมัครงานของคุณ")
+        my_apps_display = run_query("SELECT Application.*, JobPost.j_position, Company.c_name FROM Application JOIN JobPost ON Application.app_job_id = JobPost.j_id JOIN Company ON JobPost.j_company_id = Company.c_id WHERE app_job_seeker_id = %s ORDER BY app_apply_date DESC", (user['js_id'],), fetch_all=True)
+        if my_apps_display:
+            for app in my_apps_display:
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([2, 1, 1])
+                    c1.write(f"**{app['j_position']}**"); c1.caption(app['c_name'])
+                    status = app['app_status']
+                    if status == 'pending': c2.warning("รอพิจารณา")
+                    elif status == 'reviewing': c2.info("กำลังรีวิว")
+                    elif status == 'interview': c2.success("เรียกสัมภาษณ์")
+                    elif status == 'rejected': c2.error("ไม่ผ่าน")
+                    else: c2.write(f"สถานะ: {status}")
+                    if status in ['pending', 'reviewing']:
+                        if c3.button("ยกเลิกสมัคร", key=f"cancel_{app['app_id']}", use_container_width=True):
+                            run_query("DELETE FROM Application WHERE app_id = %s", (app['app_id'],), commit=True)
+                            st.toast("ยกเลิกการสมัครเรียบร้อยแล้ว"); time.sleep(1); st.rerun()
+                    else:
+                        c3.write("")
+        else:
+            st.info("คุณยังไม่ได้สมัครงาน")
+
+# --- 8. EDIT PROFILE PAGE (FIXED) ---
+def edit_profile_page(user, role):
+    st.subheader("แก้ไขข้อมูลส่วนตัว")
+    if role == "Company":
+        with st.form("edit_company_profile"):
+            st.write("### ข้อมูลบริษัท")
+            c_name = st.text_input("ชื่อบริษัท", value=user.get('c_name', ''))
+            c_email = st.text_input("Email", value=user.get('c_email', ''))
+            c_address = st.text_area("ที่อยู่", value=user.get('c_address', '')) 
+            c_contact = st.text_input("ข้อมูลติดต่อ", value=user.get('c_contact_info', ''))
+            if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
+                sql = "UPDATE Company SET c_name = %s, c_email = %s, c_address = %s, c_contact_info = %s WHERE c_id = %s"
+                if run_query(sql, (c_name, c_email, c_address, c_contact, user['c_id']), commit=True):
+                    st.session_state['user_info']['c_name'] = c_name
+                    st.session_state['user_info']['c_email'] = c_email
+                    st.session_state['user_info']['c_address'] = c_address
+                    st.session_state['user_info']['c_contact_info'] = c_contact
+                    st.success("บันทึกข้อมูลบริษัทเรียบร้อยแล้ว"); time.sleep(1); st.rerun()
+                else:
+                    st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+    elif role == "JobSeeker":
+        with st.form("edit_seeker_profile"):
+            st.write("### ข้อมูลผู้หางาน")
+            js_name = st.text_input("ชื่อ-นามสกุล", value=user.get('js_full_name', ''))
+            js_email = st.text_input("Email", value=user.get('js_email', ''))
+            js_edu = st.text_input("ระดับการศึกษา", value=user.get('js_education', ''))
+            js_skills = st.text_area("ทักษะ (Skills)", value=user.get('js_skills', ''))
+            js_exp = st.text_area("ประสบการณ์", value=user.get('js_experience', ''))
+            if st.form_submit_button("บันทึกการเปลี่ยนแปลง"):
+                sql = "UPDATE JobSeeker SET js_full_name = %s, js_email = %s, js_education = %s, js_skills = %s, js_experience = %s WHERE js_id = %s"
+                params = (js_name, js_email, js_edu, js_skills, js_exp, user['js_id'])
+                if run_query(sql, params, commit=True):
+                    st.session_state['user_info']['js_full_name'] = js_name
+                    st.session_state['user_info']['js_email'] = js_email
+                    st.session_state['user_info']['js_education'] = js_edu
+                    st.session_state['user_info']['js_skills'] = js_skills
+                    st.session_state['user_info']['js_experience'] = js_exp
+                    st.success("บันทึกข้อมูลส่วนตัวเรียบร้อยแล้ว"); time.sleep(1); st.rerun()
+                else:
+                    st.error("เกิดข้อผิดพลาดในการบันทึกข้อมูล")
+
+# --- 9. MAIN APP CONTROLLER (FINAL DEBUG VERSION) ---
+def main():
+    if 'app_initialized' not in st.session_state:
+        st.set_page_config(layout="centered", initial_sidebar_state="collapsed")
+        
+        st.title("Job Application System")
+        st.write("Connecting talent with opportunity...")
+        
+        progress_bar = st.progress(0, text="Initializing...")
+        time.sleep(0.1) 
+        
+        progress_bar.progress(25, text="Connecting to database... (this may take a moment)")
+        
+        try:
+            conn_check = init_connection() 
+            
+            if conn_check is None:
+                st.error("Application failed: Connection returned None.")
+                progress_bar.empty()
+                return
+
+            progress_bar.progress(75, text="Loading interface...")
+            time.sleep(0.1)
+            progress_bar.progress(100, text="Ready!")
+            time.sleep(0.1)
+            progress_bar.empty()
+
+            st.session_state.app_initialized = True
+            st.set_page_config(layout="centered", initial_sidebar_state="auto"); st.rerun()
+        
+        except Exception as e:
+            # (FIX) แสดง Error ที่แท้จริงบนหน้าจอ
+            st.error("Application failed to start. Here is the exact error:")
+            st.exception(e) 
+            st.error("Please double-check your 'Secrets' (Password, Host, Port) and Aiven 'Firewall (Allowed IPs)'.")
+            progress_bar.empty()
+            return 
+    
+    else:
+        # --- Main App Logic (UPDATED) ---
+        
+        if 'login_view' not in st.session_state:
+            st.session_state.login_view = 'login'
+            
+        if 'logged_in' not in st.session_state: 
+            st.session_state.logged_in = False
+            
+        if not st.session_state.logged_in:
+            login_register_page()
+            if st.session_state.logged_in: 
+                st.session_state.login_view = 'login'
+        else:
+            user, role = st.session_state.user_info, st.session_state.user_role
+            st.sidebar.header(f"บัญชีผู้ใช้: {role}")
+            st.sidebar.write(f"สวัสดี, **{user.get('c_username') or user.get('js_username')}**")
+            st.sidebar.divider()
+            page_options = ["Dashboard (หน้าหลัก)", "แก้ไขข้อมูลส่วนตัว"]
+            page = st.sidebar.radio("เมนูนำทาง", page_options)
+            st.sidebar.divider()
+            if st.sidebar.button("ออกจากระบบ"):
+                st.session_state.logged_in = False
+                st.session_state.user_role = None
+                st.session_state.user_info = None
+                st.session_state.login_view = 'login' 
+                st.rerun()
+            
+            if page == "Dashboard (หน้าหลัก)":
+                if role == "Company": company_dashboard(user)
+                elif role == "JobSeeker": seeker_dashboard(user)
+            elif page == "แก้ไขข้อมูลส่วนตัว":
+                edit_profile_page(user, role)
+
+if __name__ == '__main__':
+    main()
